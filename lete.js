@@ -116,8 +116,8 @@ if (!(bIsIpad || bIsIphoneOs || bIsMidp || bIsUc7 || bIsUc || bIsAndroid || bIsC
 // 设置页脚博主
 $(document).ready(function(e) {
     // 自己的请自行更改
-    var since = 2020;
-    var name = 'Lete乐特';
+    var since = 2021;
+    var name = '零度';
     var now = new Date();
     var nowYear = now.getFullYear();
     since = since == nowYear?since:since+" - "+nowYear;
