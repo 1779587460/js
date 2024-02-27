@@ -21,7 +21,7 @@ function browserRedirect() {
     var bIsCE = sUserAgent.match(/windows ce/i) == "windows ce";
     var bIsWM = sUserAgent.match(/windows mobile/i) == "windows mobile";
     if (!(bIsIpad || bIsIphoneOs || bIsMidp || bIsUc7 || bIsUc || bIsAndroid || bIsCE || bIsWM)) {
-        var top_up = "<img class='upj' src='https://i.loli.net/2021/09/19/v3oGlg9iWny1abH.gif'>";
+        var top_up = "<img class='upj' src='https://pic.ziyuan.wang/user/0DU/2024/02/v3oGlg9iWny1abH_ae09fc5b873a6.gif'>";
         /*添加到返回顶部按钮下*/
         document.getElementById("go-up").innerHTML += top_up;
     }
