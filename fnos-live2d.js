@@ -1,5 +1,5 @@
 /*!
- * fnOS Live2D 壁纸 —— 普通引入版 v1.24.0
+ * fnOS Live2D 壁纸 —— 普通引入版 v1.25.0
  *
  * 用法：不用油猴，直接在网页里引这个文件（放在 <head> 或 <body> 末尾都行）：
  *     <script src="/static/fnos-live2d.js"></script>
@@ -36,7 +36,7 @@
   if (window.__fnosL2DPlainLoaded) return;
   window.__fnosL2DPlainLoaded = true;
 
-  const VERSION = '1.24.0';
+  const VERSION = '1.25.0';
 
   /* ------------------------------------------------------------ *
    * 0. 探针：只要控制台出现下面这一行，就证明脚本确实被注入了。
@@ -903,8 +903,11 @@
         } catch (err) {
           ev = new Event(type, { bubbles: true, cancelable: true });
         }
-        try { Object.defineProperty(ev, '__fnosForwarded', { value: true, configurable: true }); } catch (err) {}
-        try { cv.dispatchEvent(ev); } catch (err) {}
+        try { Object.defineProperty(ev, '__fnosForwarded', { value: true, configurable: true }); } catch (err) {
+          try { ev.__fnosForwarded = true; } catch (e2) {}
+        }
+        E._forwarding = true;
+        try { cv.dispatchEvent(ev); } catch (err) {} finally { E._forwarding = false; }
       };
       const onDown = (e) => {
         if (e.__fnosForwarded || activeId !== null) return;
@@ -986,6 +989,12 @@
         try { UI.syncSliders(); } catch (err) {}
       };
       const onMove = (e) => {
+        // ⚠️ 必须挡住"我们自己转发出去的合成事件"（v1.25 修栈溢出）：
+        //    cv.dispatchEvent() 是**同步**的，合成事件会立刻从 window 捕获阶段再走一遍
+        //    我们自己的监听；onDown 有这层检查、onMove/onUp/onCancel 以前没有 ——
+        //    于是 pointermove 被无限转发，直到 RangeError: Maximum call stack size exceeded
+        //    （官方的 setPointerCapture 失败、_bridgeCapture 为 false 时必现）。
+        if (e.__fnosForwarded || E._forwarding) return;
         if (activeId === null || e.pointerId !== activeId) return;
         // 待定拖动：位移超过阈值才升级
         if (E._pendingDrag) {
@@ -1015,6 +1024,7 @@
         forward(e, 'pointermove');
       };
       const onUp = (e) => {
+        if (e.__fnosForwarded || E._forwarding) return;
         if (activeId === null || e.pointerId !== activeId) return;
         activeId = null;
         E._pendingDrag = null;
@@ -1034,6 +1044,7 @@
         E._bridgeCapture = false;
       };
       const onCancel = (e) => {
+        if (e.__fnosForwarded || E._forwarding) return;
         if (activeId === null || e.pointerId !== activeId) return;
         activeId = null;
         E._bridgeMode = null;
@@ -1266,6 +1277,15 @@
         const j = await r.json();
         this.motionGroups = (j && j.FileReferences && j.FileReferences.Motions) || {};
       } catch (e) { this.motionGroups = {}; }
+      // ⚠️ 必须先把当前模型写回配置（v1.25 修）：
+      //    台词库与触摸规则都靠 prefabOfUrl(Store.cfg.modelUrl) 去游戏数据里找皮肤，
+      //    面板顶部显示的也是 Store.cfg.modelLabel。v1.22 重写 load() 时漏掉了这两行，
+      //    结果「只有第一个模型是对的」：之后每次换模型，prefab 仍然取旧地址 →
+      //    游戏数据里找不到那个皮肤 → 台词 0 条、触摸区规则 0 条，面板还一直显示旧模型名。
+      Store.cfg.modelUrl = url;
+      if (label) Store.cfg.modelLabel = label;
+      Store.save();
+
       this.applyOfficialSettings();
       // ⚠️ 必须 await（v1.23）：台词库来自游戏数据 JSON，如果不等它，
       //   「模型已就绪」之后的一小段时间里 this.voices 还是空的 ——
@@ -1667,12 +1687,29 @@
       try {
         const j = JSON.parse(await fetchTextCached(L2D_DATA_BASE + gid + '.json'));
         const skins = (j.ship && j.ship.skins) || [];
-        const skin = skins.find((s) => s.prefab === prefab);
+        // 三级匹配（v1.25）：先精确，再宽松（忽略大小写/符号），最后按 model.path 的目录名。
+        // 实测 prefab 一般是准的，但不同皮肤的命名风格（大小写、下划线、后缀）并不统一，
+        // 多兜两层能避免"明明数据里有、就是匹配不上"。
+        let skin = skins.find((x) => x.prefab === prefab);
+        if (!skin) skin = skins.find((x) => normPrefab(x.prefab) === normPrefab(prefab));
+        if (!skin) {
+          skin = skins.find((x) => {
+            const p = (x.model && x.model.path) || '';
+            const m = p.match(/live2d\/([^/]+)\//i);
+            return m && normPrefab(m[1]) === normPrefab(prefab);
+          });
+        }
         this.voices = (skin && skin.words) || [];
         this._l2dTouch = (skin && skin.model && skin.model.live2dTouch) || null;
         const zr = (this._l2dTouch && this._l2dTouch.rules) || [];
-        log('游戏数据：台词 ' + this.voices.length + ' 条，触摸区规则 ' + zr.length + ' 条' +
-          (skin ? '（' + skin.name + '）' : '（没匹配到本模型）'));
+        if (skin) {
+          log('游戏数据：台词 ' + this.voices.length + ' 条，触摸区规则 ' + zr.length + ' 条（' + skin.name + '）');
+        } else {
+          // 没匹配上时把线索都打出来，方便一眼看出是"ID 不对"还是"模型名对不上"
+          log('游戏数据：没匹配到本模型 —— 船只 ' + (j.ship && j.ship.id) + '，' +
+              '要找的模型名「' + prefab + '」，该船下的皮肤：' +
+              skins.map((x) => x.prefab).join(' / '));
+        }
       } catch (e) {
         log('游戏数据加载失败：' + (e && e.message ? e.message : e));
       }
@@ -1988,6 +2025,8 @@
     const m = s.match(/\/([^/]+)\/\1\.model3\.json/i) || s.match(/\/([^/]+)\.model3\.json/i);
     return m ? m[1] : '';
   }
+
+  const normPrefab = (x) => String(x == null ? '' : x).toLowerCase().replace(/[^a-z0-9]/g, '');
 
   /** 皮肤 ID -> 船 ID：307074 -> 30707 */
   function shipGroupIdOf(skinId) {
