@@ -1,5 +1,5 @@
 /*!
- * fnOS Live2D 壁纸 —— 普通引入版 v1.25.0
+ * fnOS Live2D 壁纸 —— 普通引入版 v1.26.0
  *
  * 用法：不用油猴，直接在网页里引这个文件（放在 <head> 或 <body> 末尾都行）：
  *     <script src="/static/fnos-live2d.js"></script>
@@ -36,7 +36,7 @@
   if (window.__fnosL2DPlainLoaded) return;
   window.__fnosL2DPlainLoaded = true;
 
-  const VERSION = '1.25.0';
+  const VERSION = '1.26.0';
 
   /* ------------------------------------------------------------ *
    * 0. 探针：只要控制台出现下面这一行，就证明脚本确实被注入了。
@@ -114,6 +114,8 @@
     opacity: 0.95,
     mirror: false,
     follow: true,      // 视线跟随鼠标（自研驱动 focusController，幅度明显）
+    fastLoad: true,    // 快速加载：启动即并行预热官方运行时（省掉与依赖库串行等待的那几秒）
+    entryLogin: true,  // 载入模型时播 login 动作（像 l2d.su 那样"进门就有登录演出"）；关掉则播待机
     breath: true,      // 呼吸（官方 setLive2DBreathing）
     blink: true,       // 眨眼（官方 setLive2DEyeBlinking）
     gestures: true,    // 拖动移动模型 + 滚轮缩放（合并成一个开关）
@@ -204,7 +206,23 @@
     setTimeout(() => { if (n && n.parentNode) n.parentNode.removeChild(n); }, 600);
   }
 
-  /* ============================================================ *
+  /* ------------------------------------------------------------ *
+   * 加载耗时打点（v1.26）
+   * 只做记录、最后汇总成一条日志 —— 不然"为什么这么慢"永远只能靠猜。
+   * 分四段：依赖库 → 官方运行时(chunk) → 渲染器 → 模型资源。
+   * ------------------------------------------------------------ */
+  const PERF = { t0: 0, marks: {} };
+  function perfStart() { PERF.t0 = performance.now(); PERF.marks = {}; return PERF.t0; }
+  function perfMark(name) { if (PERF.t0) { PERF.marks[name] = performance.now() - PERF.t0; } }
+  function perfReport() {
+    if (!PERF.t0) return;
+    const m = PERF.marks, f = (x) => (x == null ? '—' : (x / 1000).toFixed(2) + 's');
+    log('加载耗时（距脚本启动）：依赖库 ' + f(m.libs) + ' ｜ 官方运行时 ' + f(m.su) +
+        ' ｜ 渲染器 ' + f(m.viewer) + ' ｜ 模型资源 ' + f(m.model) +
+        ' ｜ 全部就绪 ' + f(m.ready));
+  }
+
+  /* ------------------------------------------------------------ *
    * 网络资源缓存（v1.22）
    *
    * 官方运行时是 6 个 chunk（约 2.5MB）+ 游戏数据 JSON，每次刷新页面都要重下 ——
@@ -214,12 +232,17 @@
    * 脚本升级即自动失效，不会用到旧代码。
    * ============================================================ */
   const CACHE_DB = 'fnos-l2d-cache', CACHE_STORE = 'res';
+  // v1.26：连接复用。原来每次 cacheGet/cachePut 都 indexedDB.open() 再 close() ——
+  // 一次加载要读 12 个文本 + 5 个模型资源，等于开关 17 次数据库连接，
+  // 每次都带一次事务建立开销。现在只开一次、一直留着（浏览器会在标签页关闭时回收）。
+  let idbConn = null;
   function idbOpen() {
+    if (idbConn) return Promise.resolve(idbConn);
     return new Promise((resolve, reject) => {
       try {
         const r = indexedDB.open(CACHE_DB, 1);
         r.onupgradeneeded = () => { try { r.result.createObjectStore(CACHE_STORE); } catch (e) {} };
-        r.onsuccess = () => resolve(r.result);
+        r.onsuccess = () => { idbConn = r.result; resolve(r.result); };
         r.onerror = () => reject(r.error);
       } catch (e) { reject(e); }
     });
@@ -230,12 +253,21 @@
         const tx = db.transaction(CACHE_STORE, mode);
         const st = tx.objectStore(CACHE_STORE);
         const req = fn(st);
-        tx.oncomplete = () => { try { db.close(); } catch (e) {} resolve(req && req.result); };
-        tx.onerror = () => { try { db.close(); } catch (e) {} reject(tx.error); };
+        tx.oncomplete = () => resolve(req && req.result);      // 连接留着复用，不 close（v1.26）
+        tx.onerror = () => reject(tx.error);
       } catch (e) { reject(e); }
     }));
   }
   const cacheGet = (key) => idbOp('readonly', (st) => st.get(key));
+  /** 清掉旧版本留下来的缓存键（v1.26 起键格式变了，不清就是一堆永不命中的垃圾） */
+  async function pruneOldCache() {
+    try {
+      const rows = await cacheList();
+      const stale = (rows || []).filter((r) => /^v[0-9.]+|/.test(String(r.key)));
+      for (const r of stale) { try { await idbOp('readwrite', (st) => st.delete(r.key)); } catch (e) {} }
+      if (stale.length) log('已清理旧格式缓存 ' + stale.length + ' 条');
+    } catch (e) {}
+  }
   const cachePut = (key, val) => idbOp('readwrite', (st) => st.put(val, key));
 
   /**
@@ -256,8 +288,8 @@
           const c = req.result;
           if (c) { out.push({ key: c.key, at: (c.value && c.value.at) || 0 }); c.continue(); }
         };
-        tx.oncomplete = () => { try { db.close(); } catch (e) {} resolve(out); };
-        tx.onerror = () => { try { db.close(); } catch (e) {} reject(tx.error); };
+        tx.oncomplete = () => resolve(out);
+        tx.onerror = () => reject(tx.error);
       } catch (e) { reject(e); }
     }));
   }
@@ -278,7 +310,11 @@
 
   /** 带缓存的文本拉取；缓存不可用时静默退化为直连 */
   async function fetchTextCached(url) {
-    const key = 'v' + VERSION + '|' + url;
+    // v1.26：缓存键**不再带脚本版本号** —— chunk / 游戏数据的内容由 l2d.su 决定，
+    //   跟我们的脚本版本没关系。以前带上版本号，结果每次更新脚本（哪怕只改一行注释）
+    //   都会让 2.5MB 的 chunk 缓存全部失效、重新下载，用户体感就是每次更新完都特别慢。
+    //   chunk 文件名本身带内容哈希（index-LGceUR3e.js），所以按 URL 缓存是安全的。
+    const key = 'res|' + url;
     try {
       const hit = await cacheGet(key);
       if (typeof hit === 'string' && hit.length) { log('缓存命中：' + url.replace('https://', '')); return hit; }
@@ -352,6 +388,20 @@
     log('已开启模型资源缓存（moc3 / 纹理 / 物理，走 IndexedDB）');
   }
 
+  /**
+   * 确保 Cubism Core 已加载（v1.26）。
+   * 「依赖库」与「官方运行时」两条线现在并行跑，两边都会需要 core；
+   * 没有这个去重就会各注入一份 <script>，白下载一遍。
+   */
+  let coreInjecting = null;
+  function ensureCore() {
+    if (window.Live2DCubismCore) return Promise.resolve();
+    if (!coreInjecting) {
+      coreInjecting = injectScript(CDN.core).catch((e) => { coreInjecting = null; throw e; });
+    }
+    return coreInjecting;
+  }
+
   /** 依次尝试多个 URL 注入 <script>，任一成功即 resolve */
   function injectScript(urls, timeoutMs) {
     const LIMIT = timeoutMs || 12000;
@@ -401,7 +451,7 @@
   async function ensureLibs() {
     if (!window.Live2DCubismCore) {
       log('① 加载 Live2D Cubism Core…');
-      await injectScript(CDN.core);
+      await ensureCore();
     }
     if (!window.Live2DCubismCore) throw new Error('Live2D Cubism Core 加载失败——可能是网络无法访问 CDN');
     log('① Cubism Core 就绪');
@@ -454,6 +504,8 @@
         // v1.24：模型投影已移除；呼吸 / 眨眼改为可开关（默认开，与官方一致）
         if (this.cfg.shadow !== undefined) delete this.cfg.shadow;
         if (this.cfg.breath === undefined) this.cfg.breath = true;
+        if (this.cfg.entryLogin === undefined) this.cfg.entryLogin = true;
+        if (this.cfg.fastLoad === undefined) this.cfg.fastLoad = true;
         // v1.24：「渲染」滑杆以前没接线，值多为默认 1；现在它真的控制渲染分辨率了，
         // 把这类默认值迁到官方基线 1.5，免得升级后画面反而变糊（用户手动调过的值不动）。
         if (this.cfg.cfgV !== 3) {
@@ -626,7 +678,7 @@
             '.pixi-source-canvas{display:block;width:100%;height:100%;pointer-events:none}';
           document.head.appendChild(st);
         }
-        if (!window.Live2DCubismCore) await injectScript(CDN.core);
+        await ensureCore();
         const BASE = 'https://l2d.su/assets/';
         const texts = {};
         await Promise.all(SU_CHUNKS.map(async (f) => {
@@ -654,6 +706,7 @@
             if (SU_CHUNKS.indexOf(nm) >= 0 && deps[f].indexOf(nm) < 0) deps[f].push(nm);
           }
         }
+        perfMark('su');
         const mk = (code) => URL.createObjectURL(new Blob([code], { type: 'text/javascript' }));
         const done = {};
         for (let pass = 0; pass <= SU_CHUNKS.length; pass++) {
@@ -795,6 +848,7 @@
           log('已接上官方动作回调（互动会播对应语音）');
         }
       } catch (e) { log('注册动作回调失败：' + (e && e.message)); }
+      perfMark('viewer');
       this.installOfficialBridge();
       applyCanvasEffects();
       this.official.ready = true;
@@ -1261,13 +1315,24 @@
       const spec = await buildOfficialSpec(url, Store.cfg.skinId);
       log('官方引擎：载入模型 ' + (label || url));
       await viewer.load(spec);
+      perfMark('model');
       this.model = viewer.currentLive2d || null;
       // 官方加载后必须走的初始化序列（对齐他们 app 的 loadModel）：
       //   捕获默认状态 → 建命中区 → 绑定指针 → 播待机；少一步命中区会全部 visible=false（点不动）
       try { if (viewer.captureDefaults) viewer.captureDefaults(this.model); } catch (e) { log('captureDefaults 失败：' + e.message); }
       try { if (viewer.setupLive2DHitAreas) viewer.setupLive2DHitAreas(this.model); } catch (e) { log('setupLive2DHitAreas 失败：' + e.message); }
       try { if (viewer.bindLive2DHitAreas) viewer.bindLive2DHitAreas(this.model); } catch (e) { log('bindLive2DHitAreas 失败：' + e.message); }
-      try { if (viewer.playLive2DIdleMotion) viewer.playLive2DIdleMotion(0); } catch (e) {}
+      // 载入时播什么（v1.26）：默认播 login（对齐 l2d.su —— 进门先说登录台词那套动作），
+      // 面板「进入加载登录动画」关掉则播待机 idle0。
+      // 之所以给开关：有些模型的 login 动作会把服饰/道具状态一起带走，不是所有人都喜欢。
+      try {
+        const groups = this.motionGroups || {};
+        if (Store.cfg.entryLogin !== false && groups.login && groups.login.length) {
+          this.playMotion('login');
+        } else if (viewer.playLive2DIdleMotion) {
+          viewer.playLive2DIdleMotion(0);
+        }
+      } catch (e) {}
       // 官方已完成 fitDisplayObject（默认取景）→ 此刻的 scale/position 就是基准。
       // 之后用户的缩放/位移都在这套基准上叠加，且打 __userTransform 防止官方再覆盖。
       this._offBase = null;
@@ -1297,7 +1362,9 @@
       UI.renderMotions(Object.keys(this.motionGroups || {}));
       UI.setStatus('');
       UI.hideError();
+      perfMark('ready');
       log('官方引擎：模型已就绪（命中区 ' + ((viewer.live2dHitAreas && viewer.live2dHitAreas.length) || 0) + ' 个）');
+      perfReport();
       this.startIdleLoop();   // 空闲自动动作（官方模式）
       // 载入瞬间容器可能还没量到真实尺寸（见 layoutOfficial 注释）——
       // 等宿主布局稳定后补一次，确保取景/命中区与屏幕一致。
@@ -1386,6 +1453,30 @@
       // 命中区可视化（showHitAreas）要跟着新变换重画
       try { if (this.official.viewer.redrawLive2DHitAreas) this.official.viewer.redrawLive2DHitAreas(); } catch (e) {}
       applyCanvasEffects();
+    },
+
+    /**
+     * 播一个动作 **并连它的台词一起播**（v1.26）。
+     *
+     * l2d.su 上点动作按钮是"动作 + 台词"一起出的，对应关系就写在游戏数据里
+     * （台词的 l2dAction 字段）。我们这边以前只播动作 —— 原因是 playMotion 会给
+     * _selfMotion 打标（防止官方动作回调再叠一层语音），于是官方回调那条路被自己挡掉了。
+     * 所以想响，就得在这里主动播一次。
+     */
+    playAction(group) {
+      if (!group) return false;
+      const ok = this.playMotion(group);
+      try {
+        if (Store.cfg.sound === true && this.voices && this.voices.length) {
+          const norm = (x) => String(x == null ? '' : x).toLowerCase().replace(/[\s_]/g, '');
+          const w = this.voices.filter((x) => norm(x.l2dAction) === norm(group))[0];
+          if (w) {
+            if (Store.cfg.voiceMotion !== false) { /* 动作已经自己播了，这里只出声音 */ }
+            this.playVoice(w, { motion: false });
+          }
+        }
+      } catch (e) {}
+      return ok;
     },
 
     /**
@@ -2552,6 +2643,8 @@
         }
       });
       bindSwitch('.s-follow', 'follow', () => Engine.applyOfficialSettings());
+      bindSwitch('.s-fastload', 'fastLoad');
+      bindSwitch('.s-entrylogin', 'entryLogin');
       bindSwitch('.s-breath', 'breath', () => Engine.applyOfficialSettings());
       bindSwitch('.s-blink', 'blink', () => Engine.applyOfficialSettings());
       bindSwitch('.s-idle', 'idle');
@@ -2573,11 +2666,11 @@
             // 排掉 idle 系（那属于「空闲自动动作」），剩下的里随便挑一个
             const pool = all.filter((g) => !/^idle\d*$/i.test(g));
             const list = pool.length ? pool : all;
-            Engine.playMotion(list[Math.floor(Math.random() * list.length)]);
+            Engine.playAction(list[Math.floor(Math.random() * list.length)]);
             return;
           }
           if (all.indexOf(k) < 0) { this.setStatus('这个模型没有「' + k + '」动作'); return; }
-          Engine.playMotion(k);
+          Engine.playAction(k);
         });
       });
 
@@ -2839,7 +2932,7 @@
         const b = el('button', 'chip');
         b.textContent = MOTION_LABEL[g] || g;
         b.title = g;
-        b.addEventListener('click', () => Engine.playMotion(g));
+        b.addEventListener('click', () => Engine.playAction(g));   // 动作 + 对应台词
         box.appendChild(b);
       });
     },
@@ -2864,6 +2957,8 @@
       const c = Store.cfg;
       const set = (sel, v) => { const i = this.shadow.querySelector(sel); if (i) i.checked = !!v; };
       set('.s-mirror', c.mirror);
+      set('.s-fastload', c.fastLoad !== false);
+      set('.s-entrylogin', c.entryLogin !== false);
       set('.s-breath', c.breath !== false);
       set('.s-blink', c.blink !== false);
       set('.s-loginpage', c.loginPage === true);
@@ -3146,10 +3241,17 @@
         <button data-preset="fill">填满高度</button>
       </div>
       <label class="switch">水平镜像<input type="checkbox" class="s-mirror"></label>
+      <label class="switch">快速加载<input type="checkbox" class="s-fastload" checked></label>
+      <label class="switch">进入加载登录动画<input type="checkbox" class="s-entrylogin" checked></label>
       <label class="switch">呼吸<input type="checkbox" class="s-breath" checked></label>
       <label class="switch">眨眼<input type="checkbox" class="s-blink" checked></label>
       <label class="switch">登录页也显示<input type="checkbox" class="s-loginpage"></label>
       <label class="switch">简易控制栏<input type="checkbox" class="s-bar" checked></label>
+      <div class="hint"><b>快速加载</b>：启动时立刻并行预取官方运行时（约 2.5MB）与依赖库，
+        省掉两段串行的等待；配合内置资源缓存，二次刷新基本几秒就能就绪。
+        关掉则改成"用到才拉"（少占一点带宽，但会慢几秒）。<br>
+        <b>进入加载登录动画</b>：载入/切换模型时先播该模型的 <code>login</code> 动作（和 l2d.su 一样）。
+        有些模型的 login 会顺手改变服饰/道具状态，不喜欢就关掉 —— 关掉后载入时只播待机。</div>
       <div class="hint"><b>简易控制栏</b>：勾上后右下角的悬浮球会直接变成一条控制栏
         （分区互动 / 声音 / 台词 / 拖动缩放 / 隐藏模型 / 还原 / 设置），点最下面的
         「设置」按钮展开这个面板。取消勾选则恢复成悬浮球。</div>
@@ -3210,11 +3312,38 @@
    * 7. 启动
    * ============================================================ */
 
+  /**
+   * 提前和几个必备域名建好连接（v1.26）。
+   * DNS + TLS 握手在首次访问时是实打实的几百毫秒，提前做掉就等于省下来。
+   */
+  function installPreconnect() {
+    try {
+      ['https://l2d.su', 'https://static.l2d.su', 'https://cdn.jsdelivr.net', 'https://fastly.jsdelivr.net',
+       'https://cubism.live2d.com'].forEach(function (h) {
+        const l = document.createElement('link');
+        l.rel = 'preconnect';
+        l.href = h;
+        l.crossOrigin = 'anonymous';
+        (document.head || document.documentElement).appendChild(l);
+      });
+    } catch (e) {}
+  }
+
   async function boot() {
+    perfStart();
+    installPreconnect();
     log('开始初始化…');
     bootHint('Live2D：正在加载依赖…');
     Store.load();
     installModelAssetCache();   // 越早越好：官方 viewer 的所有资源请求都要经过它
+    setTimeout(function () { pruneOldCache(); }, 3000);   // 后台清掉旧格式缓存键，不阻塞启动
+    // ★ 快速加载（v1.26）：把「官方运行时（2.5MB chunk）」的下载提前和依赖库并行跑 ——
+    //   原来这两段是串行的（等 PIXI/Cubism 就绪才开始拉 chunk），
+    //   实测依赖库那段要 4~5 秒，并行后这段时间直接被省掉。
+    //   SuStack.load() 自带 promise 去重，重复调用安全。
+    if (Store.cfg.fastLoad !== false) {
+      try { SuStack.load().catch(function () {}); } catch (e) {}
+    }
     try {
       await ensureLibs();
     } catch (err) {
@@ -3229,6 +3358,7 @@
       bootHint('Live2D 库未就绪，已放弃注入（详见控制台）', true);
       return;
     }
+    perfMark('libs');
     bootHint('Live2D：依赖就绪，正在查找壁纸节点…');
     UI.mount();
     watchWallpaper();
