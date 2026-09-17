@@ -1,5 +1,5 @@
 /*!
- * fnOS Live2D 壁纸 —— 普通引入版 v1.27.0
+ * fnOS Live2D 壁纸 —— 普通引入版 v1.28.0
  *
  * 用法：不用油猴，直接在网页里引这个文件（放在 <head> 或 <body> 末尾都行）：
  *     <script src="/static/fnos-live2d.js"></script>
@@ -36,7 +36,7 @@
   if (window.__fnosL2DPlainLoaded) return;
   window.__fnosL2DPlainLoaded = true;
 
-  const VERSION = '1.27.0';
+  const VERSION = '1.28.0';
 
   /* ------------------------------------------------------------ *
    * 0. 探针：只要控制台出现下面这一行，就证明脚本确实被注入了。
@@ -773,6 +773,7 @@
             '.pixi-source-canvas{display:block;width:100%;height:100%;pointer-events:none}';
           document.head.appendChild(st);
         }
+        installRouteGuard();   // 双保险：万一清洗失效，也不让页面被导航走（见函数注释）
         await ensureCore();
         const BASE = 'https://l2d.su/assets/';
         const chunkNames = await resolveSuChunks();      // ★ 动态解析，避免写死的哈希过期
@@ -799,8 +800,33 @@
         }
 
         let idx = texts[idxName];
-        const ai = idx.indexOf("(0x0,v['createRoot'])(document['getElementById']('root'))");
-        if (ai > 0) idx = idx.slice(0, ai) + 'void 0;' + idx.slice(idx.indexOf('export{', ai));
+
+        // ★★ 最关键的一处清洗（v1.28 重写）：**必须切掉官方 React 应用的挂载调用**。
+        //
+        // 为什么：官方 index chunk 末尾会执行
+        //     (0x0,v['createRoot'])(document['getElementById']('root')).render(<App/>)
+        // 我们和飞牛共用同一个页面，一旦让它跑起来：
+        //   · 它接管路由 → 把 / 重定向到 /cn/（用户的地址栏被改，飞牛桌面直接进不去）
+        //   · 它用**相对路径**请求自己的资源（gem.png、data/ships-CN.json）
+        //     → 打到 NAS 域名上 404
+        //   · 它的 render 还会和我们抢 #root
+        //
+        // ⚠️ 旧实现按精确字符串找 document[getElementById]，l2d.su 一重建、
+        //    把参数名混淆成 document[_0x2699df(0x2ec)] 就失配 → **静默失效**，
+        //    于是上面那些灾难症状全出来了。现在改成：只认稳定的锚点
+        //    「(0x0,xxx[createRoot])(」这个锚点，然后按**语句边界**把整条调用截掉。
+        const CR_ANCHOR = /\(0x0,\s*[\w$]+\[['"]createRoot['"]\]\)\(/;
+        const cr = CR_ANCHOR.exec(idx);
+        if (cr) {
+          let s0 = cr.index;
+          while (s0 > 0 && ';}'.indexOf(idx.charAt(s0 - 1)) < 0) s0--;   // 回退到语句起点
+          const e0 = idx.indexOf('export{', cr.index);
+          idx = idx.slice(0, s0) + 'void 0;' + (e0 > 0 ? idx.slice(e0) : '');
+          log('已切掉官方应用的挂载调用（保护当前页面不被接管）');
+        } else {
+          // 连锚点都找不到说明结构又变了 —— 这时**宁可不加载**，也不能把用户页面搞坏
+          throw new Error('无法定位官方应用的挂载调用（l2d.su 结构可能又变了），已中止加载以保护当前页面');
+        }
         // ⚠️ 千万不要 patch Kt。它的原意就是 `'/' + x`（把 'assets/x.css' 变成
         // '/assets/x.css'），供 Vite 预加载解析绝对路径用。曾经 patch 成拼资源域，
         // 直接导致 CSS 404 → 模型载入整体失败。
@@ -846,6 +872,36 @@
       return this.promise;
     },
   };
+
+  /**
+   * 路由守卫（v1.28，双保险）。
+   *
+   * 官方 index chunk 里那套 SPA 路由一旦活起来，会把当前页面的 URL 从 / 改成 /cn/
+   * （用户实测"地址栏被改了、进不去飞牛桌面"）。清洗代码正常工作时它根本不会运行，
+   * 但这类"依赖对方代码结构"的清洗总有再次失配的一天 —— 所以再加一道：
+   * 只拦「跳到 /cn/...」这一类，且当前页面不是 l2d.su 自己时；
+   * 飞牛自己的路由（同样的 pushState）完全不受影响。
+   */
+  function installRouteGuard() {
+    if (window.__fnosRouteGuard) return;
+    window.__fnosRouteGuard = true;
+    const wrap = (name) => {
+      const orig = history[name];
+      if (typeof orig !== 'function') return;
+      history[name] = function (st, title, url) {
+        try {
+          const u = String(url == null ? '' : url);
+          if (u && /(^|\/)cn(\/|$|\?|#)/.test(u) && location.hostname !== 'l2d.su') {
+            log('已拦截官方路由跳转 → ' + u + '（保护当前页面不被导航走）');
+            return undefined;
+          }
+        } catch (e) {}
+        return orig.apply(this, arguments);
+      };
+    };
+    wrap('pushState');
+    wrap('replaceState');
+  }
 
   /** 官方加载器要的 spec：优先用游戏数据（含触摸规则），拿不到就用最小可用的合成 spec */
   async function buildOfficialSpec(url, skinId) {
@@ -2983,7 +3039,46 @@
         btn.addEventListener('click', () => this.onBarClick(b.k));
         bar.appendChild(btn);
       });
+      this.installBarDrag();
       this.syncBar();
+    },
+
+    /**
+     * 让「简易控制栏」可以拖动（v1.28）。
+     * 只在**空白处**（不是按钮上）按下才生效，避免误触按钮时顺带把栏挪走。
+     * 位置与悬浮球共用 fabRight / fabBottom —— 两者本来就互斥显示，共用一套坐标最直观。
+     */
+    installBarDrag() {
+      const bar = this.bar;
+      if (!bar || bar.__fnosDraggable) return;
+      bar.__fnosDraggable = true;
+      const UI = this;
+      bar.addEventListener('pointerdown', (e) => {
+        if (e.button !== 0) return;
+        if (e.target && e.target.closest && e.target.closest('button')) return;   // 按钮照常点
+        e.preventDefault();
+        const c = Store.cfg;
+        const sx = e.clientX, sy = e.clientY;
+        const ox = Number(c.fabRight) || 0, oy = Number(c.fabBottom) || 0;
+        let moved = false;
+        const move = (ev) => {
+          const r = Math.max(0, Math.min(window.innerWidth - 56, ox + (sx - ev.clientX)));
+          const b = Math.max(0, Math.min(window.innerHeight - 56, oy + (sy - ev.clientY)));
+          if (Math.abs(r - ox) + Math.abs(b - oy) > 2) moved = true;
+          c.fabRight = r;
+          c.fabBottom = b;
+          UI.applyFabPosition();
+        };
+        const up = () => {
+          window.removeEventListener('pointermove', move, true);
+          window.removeEventListener('pointerup', up, true);
+          window.removeEventListener('pointercancel', up, true);
+          if (moved) { Store.save(); UI.setStatus('控制栏位置已保存（' + Math.round(c.fabRight) + ', ' + Math.round(c.fabBottom) + '）'); setTimeout(() => UI.setStatus(''), 1500); }
+        };
+        window.addEventListener('pointermove', move, true);
+        window.addEventListener('pointerup', up, true);
+        window.addEventListener('pointercancel', up, true);
+      });
     },
 
     onBarClick(k) {
@@ -3277,6 +3372,10 @@
     pointer-events: auto; transition: opacity .35s;
   }
   .bar.show { display: flex; }
+  /* 简易控制栏可拖动（v1.28）：空白处按住即可挪位置（位置与悬浮球共用同一组坐标） */
+  .bar { cursor: grab; touch-action: none; }
+  .bar:active { cursor: grabbing; }
+  .bar button { cursor: pointer; }
   .bar.faded { opacity: .35; }
   .bar.faded:hover { opacity: 1; }
   .bar button {
@@ -3378,7 +3477,8 @@
         有些模型的 login 会顺手改变服饰/道具状态，不喜欢就关掉 —— 关掉后载入时只播待机。</div>
       <div class="hint"><b>简易控制栏</b>：勾上后右下角的悬浮球会直接变成一条控制栏
         （分区互动 / 声音 / 台词 / 拖动缩放 / 隐藏模型 / 还原 / 设置），点最下面的
-        「设置」按钮展开这个面板。取消勾选则恢复成悬浮球。</div>
+        「设置」按钮展开这个面板。取消勾选则恢复成悬浮球。<br>
+        <b>按住控制栏的空白处即可拖动</b>它的位置（悬浮球也一样，位置会自动记住）。</div>
       <div class="hint">登录页和桌面共用同一套壁纸节点，所以脚本两边都会命中。
         但登录页会被整屏的交互层盖住、导致登不进去，所以<b>默认不接管登录页</b>；
         想看的话打开这个开关，并顺手关掉「分区互动」，登录界面完全不受影响。</div>
