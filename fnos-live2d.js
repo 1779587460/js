@@ -1,5 +1,5 @@
 /*!
- * fnOS Live2D 壁纸 —— 普通引入版 v1.26.0
+ * fnOS Live2D 壁纸 —— 普通引入版 v1.27.0
  *
  * 用法：不用油猴，直接在网页里引这个文件（放在 <head> 或 <body> 末尾都行）：
  *     <script src="/static/fnos-live2d.js"></script>
@@ -36,7 +36,7 @@
   if (window.__fnosL2DPlainLoaded) return;
   window.__fnosL2DPlainLoaded = true;
 
-  const VERSION = '1.26.0';
+  const VERSION = '1.27.0';
 
   /* ------------------------------------------------------------ *
    * 0. 探针：只要控制台出现下面这一行，就证明脚本确实被注入了。
@@ -308,6 +308,20 @@
     trimming = false;
   }
 
+  /**
+   * 内容是不是「HTML 错误页」（v1.27）。
+   *
+   * 为什么必须判：l2d.su 是 SPA，请求不存在的文件会**返回 200 + index.html**
+   * （不是 404）。这种响应一旦进了缓存，之后每次 import 都会报
+   * "Unexpected token '<'"，而且因为缓存键按 URL、看上去一切正常，极难排查。
+   * 注意只看内容开头，不看 Content-Type —— 实测 l2d.su 有把真 JS 标成
+   * text/html 的情况（resourceProgress-*.js），以 MIME 为准会误杀。
+   */
+  function looksLikeHtml(text) {
+    const head = String(text || '').replace(/^\uFEFF/, '').trimStart().slice(0, 200).toLowerCase();
+    return head.startsWith('<!doctype') || head.startsWith('<html') || head.startsWith('<?xml');
+  }
+
   /** 带缓存的文本拉取；缓存不可用时静默退化为直连 */
   async function fetchTextCached(url) {
     // v1.26：缓存键**不再带脚本版本号** —— chunk / 游戏数据的内容由 l2d.su 决定，
@@ -317,11 +331,23 @@
     const key = 'res|' + url;
     try {
       const hit = await cacheGet(key);
-      if (typeof hit === 'string' && hit.length) { log('缓存命中：' + url.replace('https://', '')); return hit; }
+      if (typeof hit === 'string' && hit.length) {
+        if (looksLikeHtml(hit)) {
+          // 缓存里混进了 HTML 错误页 —— 扔掉重下（不清的话会永远 import 失败）
+          log('缓存内容异常（HTML），已丢弃重下：' + url.split('/').pop());
+          try { await idbOp('readwrite', (st) => st.delete(key)); } catch (e) {}
+        } else {
+          log('缓存命中：' + url.replace('https://', ''));
+          return hit;
+        }
+      }
     } catch (e) { /* 缓存不可用，直连 */ }
     const r = await fetch(url, { credentials: 'omit' });
     if (!r.ok) throw new Error('HTTP ' + r.status + ' @ ' + url);
     const t = await r.text();
+    if (looksLikeHtml(t)) {
+      throw new Error('返回的是 HTML 而不是脚本/数据（该文件可能已不存在，被站点回落页顶替）：' + url);
+    }
     try { await cachePut(key, t); } catch (e) { /* 忽略写入失败 */ }
     return t;
   }
@@ -372,7 +398,9 @@
         }
         return origFetch(input, init).then((res) => {
           try {
-            if (res && res.ok) {
+            const ct = (res && res.headers && typeof res.headers.get === 'function')
+              ? String(res.headers.get('content-type') || '') : '';
+            if (res && res.ok && !/text\/html/i.test(ct)) {   // HTML 回落页绝不入缓存（v1.27）
               const cl = res.clone();
               cl.blob().then((blob) => {
                 if (!blob || !blob.size || blob.size > 12 * 1024 * 1024) return;   // 太大就不缓存
@@ -404,7 +432,7 @@
 
   /** 依次尝试多个 URL 注入 <script>，任一成功即 resolve */
   function injectScript(urls, timeoutMs) {
-    const LIMIT = timeoutMs || 12000;
+    const LIMIT = timeoutMs || 6000;   // v1.27：12s 太长，一个源不可达就白等 12 秒（实测过）
     return new Promise((resolve, reject) => {
       let i = 0;
       const next = () => {
@@ -584,10 +612,77 @@
    *   · 两个补丁：import.meta.resolve（Vite 预加载辅助）换恒等函数；
    *     预加载把 /assets/… 挂到当前站点会 404 硬报错 → 指回官方域名。
    * ============================================================ */
-  const SU_CHUNKS = [
+  // 官方运行时的 chunk 前缀（顺序就是要加载的顺序）
+  const SU_CHUNK_PREFIXES = ['index', 'lib', 'live2dRuntime', 'modelRuntime', 'resourceProgress', 'spineRuntime'];
+  // 兜底列表：只在"动态解析失败"时用。⚠️ 这些文件名会随 l2d.su 每次重新构建而失效
+  // （哈希变），失效后请求会命中 SPA 回落 → 返回 HTML → import 报 Unexpected token '<'，
+  // 所以正常路径必须走下面的 resolveSuChunks()。
+  const SU_CHUNKS_FALLBACK = [
     'index-LGceUR3e.js', 'lib-BYypsEmk.js', 'resourceProgress-CyQ66jqg.js',
     'live2dRuntime-CzMa3YhQ.js', 'spineRuntime-CwB63JJC.js', 'modelRuntime-BDk3g7Pb.js',
   ];
+
+  /** 从一段 JS 里扫出所有 xxx-HASH.js 形式的 chunk 名 */
+  function extractChunkNames(js) {
+    const out = [];
+    const re = /([A-Za-z0-9_$]{2,})-[A-Za-z0-9_-]{6,}\.js/g;
+    let m;
+    while ((m = re.exec(String(js || '')))) out.push(m[0]);
+    return out;
+  }
+
+  /**
+   * 解析出**当前**官方运行时的 chunk 文件名（v1.27）。
+   *
+   * 为什么必须动态：l2d.su 每次重新构建，chunk 文件名里的哈希都会变
+   * （index-LGceUR3e.js → index-BOQIyovp.js）。以前写死 6 个名字，
+   * 对方一清理旧文件就整条链路报废（而且报的是 "Unexpected token '<'" 这种迷惑错误）。
+   *
+   * 步骤：入口页 HTML → 拿到 index-*.js → 拉入口 → 扫它引用的 chunk →
+   * 只对「我们关心的 6 类前缀」继续递归（最多两层）→ 凑齐即可。
+   * 结果缓存 6 小时，避免每次刷新都去解析。
+   */
+  async function resolveSuChunks() {
+    try {
+      const cached = await cacheGet('su-chunks');
+      if (cached && cached.list && cached.list.length >= 4 && (Date.now() - (cached.at || 0)) < 6 * 3600 * 1000) {
+        return cached.list;
+      }
+    } catch (e) {}
+
+    const found = new Map();
+    try {
+      const html = await (await fetch('https://l2d.su/cn/', { credentials: 'omit' })).text();
+      const entry = (html.match(/\/assets\/(index-[A-Za-z0-9_-]{6,}\.js)/) || [])[1];
+      const queue = [];
+      if (entry) { found.set('index', entry); queue.push(entry); }
+
+      for (let depth = 0; depth < 2 && queue.length; depth++) {
+        const batch = queue.splice(0, queue.length);
+        const texts = await Promise.all(batch.map((n) =>
+          fetchTextCached('https://l2d.su/assets/' + n).catch(() => '')));
+        for (const t of texts) {
+          for (const name of extractChunkNames(t)) {
+            const p = name.split('-')[0];
+            if (SU_CHUNK_PREFIXES.indexOf(p) < 0) continue;      // 不关心的 chunk 不追
+            if (!found.has(p)) { found.set(p, name); queue.push(name); }
+          }
+        }
+      }
+
+      const list = [];
+      for (const p of SU_CHUNK_PREFIXES) if (found.has(p)) list.push(found.get(p));
+      if (list.length >= 4) {
+        log('官方运行时资源解析完成（' + list.length + ' 个）：' + list.join(' / '));
+        try { await cachePut('su-chunks', { list: list, at: Date.now() }); } catch (e) {}
+        return list;
+      }
+      log('官方运行时资源只解析出 ' + list.length + ' 个，改用内置列表兜底');
+    } catch (e) {
+      log('官方运行时资源解析失败（' + (e && e.message ? e.message : e) + '），用内置列表兜底');
+    }
+    return SU_CHUNKS_FALLBACK;
+  }
   const SuStack = {
     ready: false, promise: null, mods: null,
     async load() {
@@ -680,37 +775,52 @@
         }
         await ensureCore();
         const BASE = 'https://l2d.su/assets/';
+        const chunkNames = await resolveSuChunks();      // ★ 动态解析，避免写死的哈希过期
         const texts = {};
-        await Promise.all(SU_CHUNKS.map(async (f) => {
+        const failures = [];
+        await Promise.all(chunkNames.map(async (f) => {
           try {
             texts[f] = await fetchTextCached(BASE + f);
           } catch (e) {
-            throw new Error('拉取官方运行时失败：' + f + '（' + (e && e.message) + '）');
+            failures.push(f + '（' + (e && e.message) + '）');
           }
         }));
-        let idx = texts['index-LGceUR3e.js'];
+        if (failures.length) {
+          throw new Error('拉取官方运行时失败：' + failures.join('；'));
+        }
+        // ★ 后续所有环节都要按「解析出来的当前文件名」来，别再出现任何写死的哈希（v1.27）
+        const nameOf = (prefix) => chunkNames.filter((n) => n.indexOf(prefix + '-') === 0)[0];
+        const idxName = nameOf('index') || chunkNames[0];
+        const libName = nameOf('lib');
+        const l2dName = nameOf('live2dRuntime');
+        const mrName = nameOf('modelRuntime');
+        if (!libName || !l2dName || !mrName) {
+          throw new Error('官方运行时资源不完整：' + chunkNames.join(', '));
+        }
+
+        let idx = texts[idxName];
         const ai = idx.indexOf("(0x0,v['createRoot'])(document['getElementById']('root'))");
         if (ai > 0) idx = idx.slice(0, ai) + 'void 0;' + idx.slice(idx.indexOf('export{', ai));
         // ⚠️ 千万不要 patch Kt。它的原意就是 `'/' + x`（把 'assets/x.css' 变成
         // '/assets/x.css'），供 Vite 预加载解析绝对路径用。曾经 patch 成拼资源域，
         // 直接导致 CSS 404 → 模型载入整体失败。
-        texts['index-LGceUR3e.js'] = idx;
+        texts[idxName] = idx;
         const STATIC = /from\s*(['"])([^'"]*?)([A-Za-z0-9_.-]+\.js)\1/g;
         const DYN = /import\(\s*(['"\x60])([^'"\x60]*?)([A-Za-z0-9_.-]+\.js)\1\s*\)/g;
         const deps = {};
-        for (const f of SU_CHUNKS) {
+        for (const f of chunkNames) {
           deps[f] = [];
           const re = new RegExp(STATIC.source, 'g'); let m;
           while ((m = re.exec(texts[f])) !== null) {
             const nm = m[3];
-            if (SU_CHUNKS.indexOf(nm) >= 0 && deps[f].indexOf(nm) < 0) deps[f].push(nm);
+            if (chunkNames.indexOf(nm) >= 0 && deps[f].indexOf(nm) < 0) deps[f].push(nm);
           }
         }
         perfMark('su');
         const mk = (code) => URL.createObjectURL(new Blob([code], { type: 'text/javascript' }));
         const done = {};
-        for (let pass = 0; pass <= SU_CHUNKS.length; pass++) {
-          for (const f of SU_CHUNKS) {
+        for (let pass = 0; pass <= chunkNames.length; pass++) {
+          for (const f of chunkNames) {
             if (done[f] || !deps[f].every((d) => done[d])) continue;
             let t = texts[f];
             t = t.split('import.meta.resolve').join('window.__SU_RESOLVE');
@@ -723,11 +833,11 @@
             done[f] = true;
           }
         }
-        const undone = SU_CHUNKS.filter((f) => !done[f]);
+        const undone = chunkNames.filter((f) => !done[f]);
         if (undone.length) throw new Error('官方运行时依赖无法解析：' + undone.join(','));
-        const PIXI = await import(window.__FNOS_MODS['lib-BYypsEmk.js']);
-        await import(window.__FNOS_MODS['live2dRuntime-CzMa3YhQ.js']);
-        const mr = await import(window.__FNOS_MODS['modelRuntime-BDk3g7Pb.js']);
+        const PIXI = await import(window.__FNOS_MODS[libName]);
+        await import(window.__FNOS_MODS[l2dName]);
+        const mr = await import(window.__FNOS_MODS[mrName]);
         self.mods = { PIXI: PIXI.t, WikiModelViewer: mr.WikiModelViewer };
         self.ready = true;
         log('官方引擎就绪：PIXI v' + ((PIXI.t && PIXI.t.VERSION) || '?') + '，WikiModelViewer 已加载');
@@ -1322,17 +1432,6 @@
       try { if (viewer.captureDefaults) viewer.captureDefaults(this.model); } catch (e) { log('captureDefaults 失败：' + e.message); }
       try { if (viewer.setupLive2DHitAreas) viewer.setupLive2DHitAreas(this.model); } catch (e) { log('setupLive2DHitAreas 失败：' + e.message); }
       try { if (viewer.bindLive2DHitAreas) viewer.bindLive2DHitAreas(this.model); } catch (e) { log('bindLive2DHitAreas 失败：' + e.message); }
-      // 载入时播什么（v1.26）：默认播 login（对齐 l2d.su —— 进门先说登录台词那套动作），
-      // 面板「进入加载登录动画」关掉则播待机 idle0。
-      // 之所以给开关：有些模型的 login 动作会把服饰/道具状态一起带走，不是所有人都喜欢。
-      try {
-        const groups = this.motionGroups || {};
-        if (Store.cfg.entryLogin !== false && groups.login && groups.login.length) {
-          this.playMotion('login');
-        } else if (viewer.playLive2DIdleMotion) {
-          viewer.playLive2DIdleMotion(0);
-        }
-      } catch (e) {}
       // 官方已完成 fitDisplayObject（默认取景）→ 此刻的 scale/position 就是基准。
       // 之后用户的缩放/位移都在这套基准上叠加，且打 __userTransform 防止官方再覆盖。
       this._offBase = null;
@@ -1350,6 +1449,20 @@
       Store.cfg.modelUrl = url;
       if (label) Store.cfg.modelLabel = label;
       Store.save();
+
+      // 载入时播什么（v1.26）：默认播 login（对齐 l2d.su —— 进门先说登录台词那套动作），
+      // 面板「进入加载登录动画」关掉则播待机 idle0。
+      // ⚠️ 位置很关键：必须放在 this.motionGroups 赋值**之后** ——
+      //    它是在前面 fetch model3.json 时才填好的，放前面会读到上一个模型（或空）的动作表，
+      //    结果 login 永远判不出来、悄悄退化成 idle。
+      try {
+        const groups = this.motionGroups || {};
+        if (Store.cfg.entryLogin !== false && groups.login && groups.login.length) {
+          this.playAction('login');   // 动作 + 对应台词（声音开关开着才响）
+        } else if (viewer.playLive2DIdleMotion) {
+          viewer.playLive2DIdleMotion(0);
+        }
+      } catch (e) {}
 
       this.applyOfficialSettings();
       // ⚠️ 必须 await（v1.23）：台词库来自游戏数据 JSON，如果不等它，
@@ -2718,6 +2831,17 @@
         }, 100);
       };
       q('.btn-remount').addEventListener('click', remount);
+      // 一键清资源缓存（v1.27）：模型/脚本资源都缓存在 IndexedDB 里，
+      // 遇到明明更新了脚本还是老样子某个文件一直加载不出来时先清一次最省事。
+      q('.btn-clear-cache').addEventListener('click', () => {
+        this.setStatus('正在清空资源缓存…');
+        try {
+          if (idbConn) { try { idbConn.close(); } catch (e) {} idbConn = null; }
+          const req = indexedDB.deleteDatabase('fnos-l2d-cache');
+          req.onsuccess = req.onerror = req.onblocked = () => setTimeout(() => location.reload(), 400);
+          setTimeout(() => location.reload(), 1500);   // 兜底：卡住也刷新
+        } catch (e) { location.reload(); }
+      });
       q('.btn-hide-fab').addEventListener('click', () => {
         // 控制栏模式下这个按钮叫「隐藏按钮」，语义就是「把右下角这坨收掉」——
         // 所以顺手关掉控制栏，否则悬浮球虽然藏了、控制栏还杵在那里。
@@ -3303,6 +3427,7 @@
     <button class="btn-reset">重置</button>
     <button class="btn-toggle-show">隐藏模型</button>
     <button class="btn-remount">重新挂载</button>
+    <button class="btn-clear-cache">清缓存</button>
     <button class="btn-hide-fab">隐藏按钮</button>
   </footer>
 </div>
