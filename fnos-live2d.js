@@ -1,14 +1,14 @@
 /*!
- * fnOS Live2D 壁纸 —— 普通引入版 v1.32.0
+ * fnOS Live2D 壁纸 —— 普通引入版 v1.33.0
  *
  * 用法：不用油猴，直接在网页里引这个文件（放在 <head> 或 <body> 末尾都行）：
  *     <script src="/static/fnos-live2d.js"></script>
  * 想只对某个地址生效，把上面那行用 if 包一下，或在服务端按域名输出。
  *
  * 与 fnos-live2d.user.js 的差别：只少了油猴元数据块 + 多一个重复引入的幂等守卫，
- * 功能完全一致（素材取自 l2d.su，纯浏览器端注入，不改 NAS 上任何文件）。
+ * 功能完全一致（素材取自 资源站，纯浏览器端注入，不改 NAS 上任何文件）。
  *
- * 注意：脚本会联网取 l2d.su / static.l2d.su / jsdelivr 上的依赖与模型；
+ * 注意：脚本会联网取 资源站 / 静态资源域 / jsdelivr 上的依赖与模型；
  *       如果页面开了 CSP，需要放行这些域（飞牛 fnOS 默认没有 CSP）。
  */
 //
@@ -20,11 +20,11 @@
 /*
  * 说明
  * ------------------------------------------------------------------
- * 1) 素材来源：l2d.su（碧蓝航线 Live2D 查看器）
- *    模型文件托管在 https://static.l2d.su/azurlane/live2d/<名字>/<名字>.model3.json
+ * 1) 素材来源：资源站（碧蓝航线 Live2D 查看器）
+ *    模型文件托管在 https://static.你的域名/azurlane/live2d/<名字>/<名字>.model3.json
  *    该站点返回 Access-Control-Allow-Origin: * ，所以可以直接跨域加载，无需任何 cookie。
  * 2) 本脚本只做「浏览器端注入」，不改动 NAS 上的任何文件，卸载脚本即完全还原。
- * 3) 想换模型：面板里粘贴 l2d.su 的皮肤链接（如 https://l2d.su/cn/skins/307074/）
+ * 3) 想换模型：面板里粘贴 资源站 的皮肤链接（如 https://你的域名/cn/skins/307074/）
  *    或直接填皮肤 ID / 模型名即可，脚本会自动解析出模型地址。
  */
 
@@ -36,7 +36,7 @@
   if (window.__fnosL2DPlainLoaded) return;
   window.__fnosL2DPlainLoaded = true;
 
-  const VERSION = '1.32.0';
+  const VERSION = '1.33.0';
 
   /* ------------------------------------------------------------ *
    * 0. 探针：只要控制台出现下面这一行，就证明脚本确实被注入了。
@@ -80,31 +80,31 @@
   /* ============================================================ *
    * 资源域名（v1.31）：可配置，不写死
    *
-   * 为什么要可配：脚本的远端资源（官方运行时、模型、台词库）都来自 l2d.su 这一套域名。
+   * 为什么要可配：脚本的远端资源（官方运行时、模型、台词库）都来自 资源站 这一套域名。
    * 万一它被墙 / 换域名 / 关站 / 你想走镜像，不该只能等我们发版。
    *
    * 五个来源，优先级从高到低：
-   *   ⓪ 脚本自己的 URL 查询参数    —— <script src="…fnos-live2d.js?host=l2d.su">
+   *   ⓪ 脚本自己的 URL 查询参数    —— <script src="…fnos-live2d.js?host=你的域名">
    *        支持 ?host= 与 ?static=（也可简写 ?h= / ?s=）；
    *        域名可以不带协议（自动补 https://），也支持 http:// 与协议相对的 //；
    *        带路径/尾斜杠都会自动规整成 origin。想临时切换镜像，改这一个参数即可。
    *   ① window.__FNOS_L2D_CFG      —— 控制台注入前先设，最灵活
-   *         window.__FNOS_L2D_CFG = { host: 'https://l2d.su', staticHost: 'https://static.l2d.su' };
+   *         window.__FNOS_L2D_CFG = { host: 'https://你的域名', staticHost: 'https://static.你的域名' };
    *   ② <script data-l2d-host="…" data-l2d-static="…">  —— 直接写进网页源码时用
    *   ③ localStorage['fnos-l2d:hosts'] —— 面板里改过就记住
    *   ④ 内置默认
    *
-   * 只填 host 也可以：staticHost 会按 '://static.' 的规则推导（对 l2d.su 这一套是成立的）。
+   * 只填 host 也可以：staticHost 会按 '://static.' 的规则推导（对 资源站 这一套是成立的）。
    * 另外每次启动都会在日志里打印「实际使用的域名」—— 想知道数据发去哪了，看那一行即可。
    * ============================================================ */
   /**
    * 把用户填的域名规整成合法 origin（v1.32）。
    * 智能识别有没有协议头，几种写法都认：
-   *   l2d.su              → https://l2d.su
-   *   //l2d.su            → （沿用当前页协议）
-   *   http://l2d.su       → http://l2d.su
-   *   https://l2d.su/     → https://l2d.su      （尾斜杠丢掉）
-   *   https://l2d.su/a/b  → https://l2d.su      （路径丢掉，只留 origin）
+   *   资源站              → https://你的域名
+   *   //资源站            → （沿用当前页协议）
+   *   http://资源站       → http://资源站
+   *   https://你的域名/     → https://你的域名      （尾斜杠丢掉）
+   *   https://你的域名/a/b  → https://你的域名      （路径丢掉，只留 origin）
    * 认不出来的返回空串，由调用方决定要不要回退。
    */
   // 用来"在 DOM / 堆栈里认出自己那份脚本"的特征（文件名固定，不受 CDN/路径影响）
@@ -114,8 +114,8 @@
   function normalizeOrigin(input, fallbackProto) {
     let v = String(input == null ? '' : input).trim();
     if (!v) return '';
-    if (v.indexOf('//') === 0) v = (fallbackProto || location.protocol) + v;   // //l2d.su
-    else if (!/^https?:\/\//i.test(v)) v = 'https://' + v;                   // l2d.su → 补 https
+    if (v.indexOf('//') === 0) v = (fallbackProto || location.protocol) + v;   // //资源站
+    else if (!/^https?:\/\//i.test(v)) v = 'https://' + v;                   // 资源站 → 补 https
     try {
       const u = new URL(v);
       if (!u.hostname) return '';
@@ -129,14 +129,11 @@
       const m = /^(https?:\/\/)(.+)$/.exec(h || '');
       return m ? m[1] + 'static.' + m[2] : '';
     };
-    const def = { host: 'https://l2d.su', staticHost: 'https://static.l2d.su' };
-    const out = { host: '', staticHost: '', from: 'default' };
+    // ⚠️ 没有内置默认：不指定就什么都不加载（见 boot() 开头的检查）。
+    // 这是刻意的 —— 免得在源码里留下默认域名，也免得用户以为"装了就会自动联网取素材"。
+    const out = { host: '', staticHost: '', from: '' };
 
-    // ④ 默认
-    out.host = def.host;
-    out.staticHost = def.staticHost;
-
-    // ⓪ 脚本自己的 URL 查询参数（优先级最高）—— <script src="…?host=l2d.su">
+    // ⓪ 脚本自己的 URL 查询参数（优先级最高）—— <script src="…?host=你的域名">
     //    三种方式找回「我自己的 URL」，按可靠性排序：
     //      a) document.currentScript —— 写在 HTML 里的静态标签最准；
     //      b) 在 DOM 里找回自己 —— ★主要靠这条：
@@ -221,14 +218,21 @@
       }
     } catch (e) {}
 
+    // 只给了静态域？试着反推主域（static.x → x）。
+    // 反推不出来就留空 —— 由 boot() 拒绝加载，别猜一个错的域名去联网。
+    if (!out.host && out.staticHost) {
+      const m = /^(https?:\/\/)static\.(.+)$/.exec(out.staticHost);
+      if (m) out.host = m[1] + m[2];
+    }
+    if (!out.host) out.staticHost = '';   // 主域都没有，静态域也没意义（避免拿到半套配置）
+
     // 派生：模型目录挂在 static 域下
-    out.models = out.staticHost + '/azurlane';
-    if (!out.staticHost) { out.staticHost = deriveStatic(out.host); out.models = out.staticHost + '/azurlane'; }
+    out.models = out.staticHost ? (out.staticHost + '/azurlane') : '';
     return out;
   })();
 
-  const STATIC_BASE = HOSTS.models;                     // 例：https://static.l2d.su/azurlane
-  const SU_HOST = HOSTS.host;                           // 例：https://l2d.su
+  const STATIC_BASE = HOSTS.models;                     // 例：https://static.你的域名/azurlane
+  const SU_HOST = HOSTS.host;                           // 例：https://你的域名
   const SU_ASSETS = SU_HOST + '/assets/';
   const L2D_BASE = STATIC_BASE + '/live2d';
 
@@ -248,7 +252,7 @@
       'https://unpkg.com/pixi-live2d-display-mulmotion@0.5.0-mm-6/dist/cubism4.min.js',
     ],
     core: [
-      // 顺序按真机实测调过（v1.29）：用户网络下 l2d.su 与 jsdelivr 的这条路径都容易超时，
+      // 顺序按真机实测调过（v1.29）：用户网络下 资源站 与 jsdelivr 的这条路径都容易超时，
       // 官方 CDN 反而最稳，所以放第一位，省掉两个 6 秒的超时等待。
       'https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js',
       SU_HOST + '/lib/live2dcubismcore.min.js?v=5.1.0',
@@ -261,7 +265,7 @@
     modelLabel: '大凤「放学后的甜蜜时光」',
     zoom: 1,
     resMul: 1.5,       // 渲染倍率（叠加在设备 DPR 之上）。官方默认就是 1.5，调大更清晰、调小更省电。
-    // v1.22：内置引擎（legacy）已移除，全部走 l2d.su 官方运行时。
+    // v1.22：内置引擎（legacy）已移除，全部走 资源站 官方运行时。
     //   渲染 / 命中 / 动作 / 触摸规则 / 音效回调全部官方语义。
     posX: 72,      // 模型底部中心的水平位置（容器百分比）
     posY: 100,     // 模型底部的垂直位置（容器百分比）
@@ -269,22 +273,22 @@
     mirror: false,
     follow: true,      // 视线跟随鼠标（自研驱动 focusController，幅度明显）
     fastLoad: true,    // 快速加载：启动即并行预热官方运行时（省掉与依赖库串行等待的那几秒）
-    entryLogin: true,  // 载入模型时播 login 动作（像 l2d.su 那样"进门就有登录演出"）；关掉则播待机
+    entryLogin: true,  // 载入模型时播 login 动作（像 资源站 那样"进门就有登录演出"）；关掉则播待机
     breath: true,      // 呼吸（官方 setLive2DBreathing）
     blink: true,       // 眨眼（官方 setLive2DEyeBlinking）
     gestures: true,    // 拖动移动模型 + 滚轮缩放（合并成一个开关）
-    zones: true,       // 分区互动：拖拽模型部件驱动参数（来自 l2d.su 的 live2dTouch 规则）
+    zones: true,       // 分区互动：拖拽模型部件驱动参数（来自 资源站 的 live2dTouch 规则）
     zoneShow: false,   // 显示触摸区域：把模型里隐藏的触摸部件画出来
     sound: false,      // 声音总开关（台词语音 + 模型自带的动作音效）
     voiceMotion: true, // 播语音时联动播放对应动作
     bar: true,         // 悬浮操作栏
-    skinId: 307074,    // l2d.su 皮肤 ID（用来定位台词库；默认模型大凤「放学后的甜蜜时光」）
+    skinId: 307074,    // 资源站 皮肤 ID（用来定位台词库；默认模型大凤「放学后的甜蜜时光」）
     // v1.9.0：「可交互范围」「交互层」两个设置已移除。
     //   交互改成「只认触摸区」（window 捕获阶段探针），命中才拦截、否则放行，
     //   因此与桌面图标 / Dock 天然共存，也不存在「命中层挂哪儿」的问题。
     //   旧配置里残留的 interact / interactLayer 字段会被读进来但不再使用。
     loginPage: false,  // 登录页是否也接管壁纸（默认关：登录页要能正常登录）
-    idle: false,       // 空闲时自动播放随机待机动作（默认关：会把触摸保持的状态顶掉，l2d.su 也没有）
+    idle: false,       // 空闲时自动播放随机待机动作（默认关：会把触摸保持的状态顶掉，资源站 也没有）
     fabHidden: false,
     fabAutoFade: true,
     fabRight: 18,
@@ -465,10 +469,10 @@
   /**
    * 内容是不是「HTML 错误页」（v1.27）。
    *
-   * 为什么必须判：l2d.su 是 SPA，请求不存在的文件会**返回 200 + index.html**
+   * 为什么必须判：资源站 是 SPA，请求不存在的文件会**返回 200 + index.html**
    * （不是 404）。这种响应一旦进了缓存，之后每次 import 都会报
    * "Unexpected token '<'"，而且因为缓存键按 URL、看上去一切正常，极难排查。
-   * 注意只看内容开头，不看 Content-Type —— 实测 l2d.su 有把真 JS 标成
+   * 注意只看内容开头，不看 Content-Type —— 实测 资源站 有把真 JS 标成
    * text/html 的情况（resourceProgress-*.js），以 MIME 为准会误杀。
    */
   function looksLikeHtml(text) {
@@ -478,7 +482,7 @@
 
   /** 带缓存的文本拉取；缓存不可用时静默退化为直连 */
   async function fetchTextCached(url) {
-    // v1.26：缓存键**不再带脚本版本号** —— chunk / 游戏数据的内容由 l2d.su 决定，
+    // v1.26：缓存键**不再带脚本版本号** —— chunk / 游戏数据的内容由 资源站 决定，
     //   跟我们的脚本版本没关系。以前带上版本号，结果每次更新脚本（哪怕只改一行注释）
     //   都会让 2.5MB 的 chunk 缓存全部失效、重新下载，用户体感就是每次更新完都特别慢。
     //   chunk 文件名本身带内容哈希（index-LGceUR3e.js），所以按 URL 缓存是安全的。
@@ -512,14 +516,14 @@
    * 上面 fetchTextCached 只覆盖了我们自己拉的 chunk / 游戏数据；
    * 真正的大头（moc3 + 3 张 webp + physics，狮这套约 4MB）是官方 viewer 通过
    * fetch 自己拉的 —— 每次刷新都要重下，网络差时要等一两分钟。
-   * 这里包一层 window.fetch：命中 static.l2d.su 的模型资源就走 IndexedDB 里的
+   * 这里包一层 window.fetch：命中 静态资源域 的模型资源就走 IndexedDB 里的
    * blob，返回一个等价 Response。官方完全无感（同源策略不受影响，因为我们在
    * 页面上下文里替换的是页面自己的 fetch）。
    *
    * 注意：带 Range 的请求（读 moc3 头部之类）一律不走缓存 —— 我们存的是全量
    * blob，回 200 而不是 206 会让调用方算错。
    * ------------------------------------------------------------ */
-  // 用配置的 static 域动态构造（原来写死 static.l2d.su，换镜像后就匹配不上了）
+  // 用配置的 static 域动态构造（原来写死 静态资源域，换镜像后就匹配不上了）
   const MODEL_ASSET_RE = new RegExp('^' + HOSTS.models.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '/', 'i');
   function installModelAssetCache() {
     if (window.__fnosAssetCache) return;
@@ -684,7 +688,7 @@
         if (this.cfg.voice === true) this.cfg.sound = true;
         if (this.cfg.zoneShow === undefined) this.cfg.zoneShow = false;
         // v1.14：单次动作改为「定格末帧」后，随机的空闲待机会把保持住的状态（如拿出手机）
-        // 顶掉 —— 和 l2d.su 一样默认关掉，做一次性迁移
+        // 顶掉 —— 和 资源站 一样默认关掉，做一次性迁移
         if (this.cfg.cfgV !== 2) { this.cfg.idle = false; this.cfg.cfgV = 2; }
         // 坐标语义迁移（v1.20 起只有官方运行时）：官方坐标系是
         // 「canvas 居中 + 模型自身变换」，与旧的「底部锚点 + 容器百分比」不同。
@@ -721,8 +725,8 @@
 
   /* ============================================================ *
    * 3. 模型地址解析器
-   *    l2d.su 皮肤页会服务端渲染一段 SEO HTML，其中包含
-   *    static.l2d.su//azurlane/squareicon/<名字>.webp
+   *    资源站 皮肤页会服务端渲染一段 SEO HTML，其中包含
+   *    静态资源域//azurlane/squareicon/<名字>.webp
    *    而模型文件名与这个 <名字> 完全一致 —— 这就是映射规则。
    * ============================================================ */
 
@@ -745,14 +749,14 @@
 
     async resolve(input) {
       const s = String(input || '').trim();
-      if (!s) throw new Error('请输入 l2d.su 皮肤链接、皮肤 ID 或模型名');
+      if (!s) throw new Error('请输入皮肤页链接、皮肤 ID 或模型名');
 
       // a) 直接的 model3.json 地址
       if (/^https?:\/\/.+\.model3\.json(\?.*)?$/i.test(s)) {
         const m = s.match(/([^\/]+)\.model3\.json/i);
         return { url: s, label: m ? m[1] : s };
       }
-      // b) l2d.su 皮肤页链接
+      // b) 资源站 皮肤页链接
       const link = s.match(/l2d\.su\/(?:[a-z]{2}\/)?skins\/(\d+)/i);
       if (link) return Resolver.fromSkinId(link[1]);
       // c) 纯数字皮肤 ID
@@ -771,7 +775,7 @@
 
   /* ============================================================ *
    * 官方运行时加载器（v1.19）
-   *   直接把 l2d.su 自己的 chunk 搬过来用：PIXI + 模型加载器 + WikiModelViewer（完整交互层）。
+   *   直接把 资源站 自己的 chunk 搬过来用：PIXI + 模型加载器 + WikiModelViewer（完整交互层）。
    *   · chunk 带 CORS *，可跨域 fetch；
    *   · index 里含 React 启动（import 会渲染整站 UI）→ 去掉；
    *   · 静态 import 按拓扑序改写为 blob URL；动态 import 走 window.__FNOS_MODS 查表；
@@ -780,7 +784,7 @@
    * ============================================================ */
   // 官方运行时的 chunk 前缀（顺序就是要加载的顺序）
   const SU_CHUNK_PREFIXES = ['index', 'lib', 'live2dRuntime', 'modelRuntime', 'resourceProgress', 'spineRuntime'];
-  // 兜底列表：只在"动态解析失败"时用。⚠️ 这些文件名会随 l2d.su 每次重新构建而失效
+  // 兜底列表：只在"动态解析失败"时用。⚠️ 这些文件名会随 资源站 每次重新构建而失效
   // （哈希变），失效后请求会命中 SPA 回落 → 返回 HTML → import 报 Unexpected token '<'，
   // 所以正常路径必须走下面的 resolveSuChunks()。
   const SU_CHUNKS_FALLBACK = [
@@ -800,7 +804,7 @@
   /**
    * 解析出**当前**官方运行时的 chunk 文件名（v1.27）。
    *
-   * 为什么必须动态：l2d.su 每次重新构建，chunk 文件名里的哈希都会变
+   * 为什么必须动态：资源站 每次重新构建，chunk 文件名里的哈希都会变
    * （index-LGceUR3e.js → index-BOQIyovp.js）。以前写死 6 个名字，
    * 对方一清理旧文件就整条链路报废（而且报的是 "Unexpected token '<'" 这种迷惑错误）。
    *
@@ -858,8 +862,8 @@
       this.promise = (async () => {
         window.__FNOS_MODS = window.__FNOS_MODS || {};
         // ── 三个资源域，别再混为一谈（v1.21 修正）──────────────────────────
-        //  · chunk / css  →  https://l2d.su/assets/…        （index-CP7FX-Bo.css 也在这）
-        //  · 模型 JSON/纹理 →  https://static.l2d.su/azurlane/live2d/…
+        //  · chunk / css  →  https://你的域名/assets/…        （index-CP7FX-Bo.css 也在这）
+        //  · 模型 JSON/纹理 →  https://static.你的域名/azurlane/live2d/…
         //  官方 index.js 里两处关键定义（已反混淆核对）：
         //    Ht = window.__STATIC_ASSET_ORIGIN__.replace(/\/+$/,'')   // 缺了就直接 throw
         //    Ut = Ht;  Wt = Ut + '/azurlane'                         // Wt 只给模型用
@@ -867,7 +871,7 @@
         //    _0x4dbd3b(x) = import.meta.resolve ? resolve(x)
         //                                       : new URL(x, import.meta.url).href
         //  Vite 预加载链路：dep('assets/x.css') → Kt → '/assets/x.css' → _0x4dbd3b
-        //  站点上 import.meta.url = https://l2d.su/assets/index-*.js，于是解析正确。
+        //  站点上 import.meta.url = https://你的域名/assets/index-*.js，于是解析正确。
         //  我们把 chunk 换成 blob: URL 后 import.meta.url 变成 blob:http://本机/…，
         //  必须由 __SU_RESOLVE 把 /assets/… 兜回官方域，否则 CSS 404 →
         //  "Unable to preload CSS" → 整个模型载入 reject（v1.20 的坑）。
@@ -977,11 +981,11 @@
         //     → 打到 NAS 域名上 404
         //   · 它的 render 还会和我们抢 #root
         //
-        // ⚠️ 旧实现按精确字符串找 document[getElementById]，l2d.su 一重建、
+        // ⚠️ 旧实现按精确字符串找 document[getElementById]，资源站 一重建、
         //    把参数名混淆成 document[_0x2699df(0x2ec)] 就失配 → **静默失效**，
         //    于是上面那些灾难症状全出来了。现在改成：只认稳定的锚点
         //    「(0x0,xxx[createRoot])(」这个锚点，然后按**语句边界**把整条调用截掉。
-        // 三层定位，从最精确到最宽松（l2d.su 每次重建，混淆程度都在变，实测过两次失效）：
+        // 三层定位，从最精确到最宽松（资源站 每次重建，混淆程度都在变，实测过两次失效）：
         //   ① 认 createRoot 字面量 —— 最精确，但对方已把属性名也混淆掉（v[_0x...(0x288)]）
         //   ② 结构法：挂载调用在文件末尾、紧跟 export{ 之前，形如
         //        (0x0, xxx)(document[...])(...)['render'](...)
@@ -1105,7 +1109,7 @@
    * 官方 index chunk 里那套 SPA 路由一旦活起来，会把当前页面的 URL 从 / 改成 /cn/
    * （用户实测"地址栏被改了、进不去飞牛桌面"）。清洗代码正常工作时它根本不会运行，
    * 但这类"依赖对方代码结构"的清洗总有再次失配的一天 —— 所以再加一道：
-   * 只拦「跳到 /cn/...」这一类，且当前页面不是 l2d.su 自己时；
+   * 只拦「跳到 /cn/...」这一类，且当前页面不是 资源站 自己时；
    * 飞牛自己的路由（同样的 pushState）完全不受影响。
    */
   function installRouteGuard() {
@@ -1171,7 +1175,7 @@
     _idleMotionIndex: 0,     // 当前待机序号（面板/还原时要用）
     idleTimer: null,         // 空闲自动动作定时器（官方模式）
     _selfMotion: false,      // 我们自己主动播动作的窗口期（用于区分「互动触发」，见 onOfficialAction）
-    voices: [],              // 台词库（来自 l2d.su 游戏数据）
+    voices: [],              // 台词库（来自 资源站 游戏数据）
     voiceIndex: -1,
     _audio: null,            // 正在播放的台词
     _l2dTouch: null,         // 触摸区规则（live2dTouch）
@@ -1183,11 +1187,11 @@
       E._officialBoot = E.initOfficial(container, target).catch((e) => {
         errlog('官方运行时初始化失败：' + (e && e.message));
         UI.showError('Live2D 运行时初始化失败：' + (e && e.message) +
-          '\n请检查能否访问 l2d.su / cubism.live2d.com');
+          '\n请检查能否访问「设置的资源域名」以及 cubism.live2d.com');
       });
     },
 
-    /* ---------- 官方运行时（l2d.su） ---------- */
+    /* ---------- 官方运行时（资源站） ---------- */
 
     async initOfficial(container, target) {
       // 飞牛 React 会重建壁纸容器 DOM → tryMount 会拿着**新 container** 再次进来。
@@ -1229,7 +1233,7 @@
       }
       // ★ 互动播语音的入口（v1.22）：官方 viewer 在「触摸区被触发」时会回调
       //   setLive2DActionHandler(action, info)，action 就是动作组名（实测 touch_body / main_1…）。
-      //   官方自己**不播语音**（语音挂在 l2d.su 的游戏数据上，播的责任在宿主）——
+      //   官方自己**不播语音**（语音挂在 资源站 的游戏数据上，播的责任在宿主）——
       //   官方站也是这么接的，这就是「点模型互动没声音、点面板台词却有声音」的根因。
       try {
         if (typeof viewer.setLive2DActionHandler === 'function') {
@@ -1248,7 +1252,7 @@
     },
 
     /**
-     * 官方动作回调：在 l2d.su 的游戏数据里按动作名找对应台词并播放。
+     * 官方动作回调：在 资源站 的游戏数据里按动作名找对应台词并播放。
      *   · 触摸区被点（touch_head / touch_body / touch_special …）→ 播那条台词；
      *   · 我们自己主动播的动作（面板动作按钮 / 台词联动）不重复播，避免叠音；
      *   · 声音总开关关着就不响（与「台词」列表的行为一致）。
@@ -1732,7 +1736,7 @@
       if (label) Store.cfg.modelLabel = label;
       Store.save();
 
-      // 载入时播什么（v1.26）：默认播 login（对齐 l2d.su —— 进门先说登录台词那套动作），
+      // 载入时播什么（v1.26）：默认播 login（对齐 资源站 —— 进门先说登录台词那套动作），
       // 面板「进入加载登录动画」关掉则播待机 idle0。
       // ⚠️ 位置很关键：必须放在 this.motionGroups 赋值**之后** ——
       //    它是在前面 fetch model3.json 时才填好的，放前面会读到上一个模型（或空）的动作表，
@@ -1782,7 +1786,7 @@
      *   实测（1.61× / 水平 80%）：模型可见中心 (1152,450)，命中质心却顽固停在
      *   (704,369)，偏差 448px，正是「看得见却点不着 / 点到的不是看到的地方」。
      *
-     * 正确做法（与 l2d.su 同源）：用官方自己的 setScale() 改模型 scale，
+     * 正确做法（与 资源站 同源）：用官方自己的 setScale() 改模型 scale，
      * 直接写 model.position，并打上 `__userTransform` 标记（官方据此跳过
      * 自动 fitDisplayObject，不再覆盖用户的取景）。这样 worldTransform 里
      * 就含了用户的变换，命中判定天然一致。
@@ -1853,7 +1857,7 @@
     /**
      * 播一个动作 **并连它的台词一起播**（v1.26）。
      *
-     * l2d.su 上点动作按钮是"动作 + 台词"一起出的，对应关系就写在游戏数据里
+     * 资源站 上点动作按钮是"动作 + 台词"一起出的，对应关系就写在游戏数据里
      * （台词的 l2dAction 字段）。我们这边以前只播动作 —— 原因是 playMotion 会给
      * _selfMotion 打标（防止官方动作回调再叠一层语音），于是官方回调那条路被自己挡掉了。
      * 所以想响，就得在这里主动播一次。
@@ -1935,7 +1939,7 @@
       } catch (e) {
         errlog('模型载入失败：' + (e && e.message ? e.message : e));
         UI.showError('模型载入失败：' + (e && e.message ? e.message : e) +
-          '\n请检查网络能否访问 static.l2d.su');
+          '\n请检查网络能否访问「设置的静态资源域名」');
         UI.setStatus('');
         this.restoreOriginal();            // 失败时还原原壁纸，避免白屏
         bootHint('Live2D：模型载入失败 —— ' + (e && e.message ? e.message : e), true);
@@ -2166,7 +2170,7 @@
       const prefab = prefabOfUrl(Store.cfg.modelUrl);
       if (!gid || !prefab) {
         UI.renderVoices();
-        if (!gid) log('没有皮肤 ID，跳过台词库（用 l2d.su 链接或皮肤 ID 指定模型就能用）');
+        if (!gid) log('没有皮肤 ID，跳过台词库（用皮肤页链接或皮肤 ID 指定模型就能用）');
         else log('没从地址里认出模型名，跳过台词库：' + Store.cfg.modelUrl);
         return;
       }
@@ -2329,7 +2333,7 @@
      *
      * 这里曾经有两级兜底（按 Y 轴切三段、再不行播随机待机），结果就是
      * 「点空白处也会触发互动」。现在删掉了：
-     *   ① 优先用游戏数据里的规则（l2d.su 的做法）：命中规则的网格 → 设参数目标 + 播它的动作
+     *   ① 优先用游戏数据里的规则（资源站 的做法）：命中规则的网格 → 设参数目标 + 播它的动作
      *   ② 规则没覆盖到的模型，才退回模型里那三个通用触摸部件（TouchHead/Body/Special）
      *   ③ 都没命中 → 什么都不做
      */
@@ -2357,13 +2361,13 @@
         //   清掉它的后果 = 参数停在中途不回位、触摸区「没有线性移动到正确位置」，
         //   严重时相关触摸部件不可见（用户看到的「触摸区全消失」）。
         //   切场景时官方自己会 resetLive2DRulesForIdle（带平滑）把参数带回起点，
-        //   我们什么都不做才是最贴近 l2d.su 的行为。
+        //   我们什么都不做才是最贴近 资源站 的行为。
         // 待机组必须走官方的「切 IDLE」序列，不能直接 playMotionGroup：
         //   playLive2DIdleMotion(n) = live2DIdleMotionName(n) → playMotionGroup('idleN')
         //   并且官方在切 IDLE 时会 resetLive2DRulesForIdle()：把不属于新 IDLE 的
         //   触摸区参数推回起点（=「互动区域先移到画面外」），新 IDLE 该露出来的
         //   再移回画面内。实测 sig 皮肤 idx=0 时 TouchIdle2/3/4/5/8/17/19/26/32
-        //   全部由可见变 invisible，TouchIdle34/38 大幅横移 —— 正是 l2d.su 的行为。
+        //   全部由可见变 invisible，TouchIdle34/38 大幅横移 —— 正是 资源站 的行为。
         const idle = /^idle([0-9]*)$/i.exec(group);
         if (idle && typeof v.playLive2DIdleMotion === 'function') {
           const idx = group.toLowerCase() === 'idle' ? 0 : parseInt(idle[1], 10);
@@ -2442,7 +2446,7 @@
     window.fnosLive2D.dump = function () {
       const v = Engine.official && Engine.official.viewer;
       return {
-        运行时: 'l2d.su 官方（v1.22 起唯一）',
+        运行时: '资源站 官方（v1.22 起唯一）',
         模型: Store.cfg.modelLabel || Store.cfg.modelUrl,
         缩放: Store.cfg.zoom, 水平: Store.cfg.posX, 垂直: Store.cfg.posY,
         配置: JSON.parse(JSON.stringify(Store.cfg)),
@@ -2486,15 +2490,15 @@
   /* ============================================================ *
    * 台词库 & 分区互动
    *
-   * ⚠️ 两者都来自 l2d.su 的「游戏数据」，**不在 model3.json 里** —— 这点很容易搞错：
+   * ⚠️ 两者都来自 资源站 的「游戏数据」，**不在 model3.json 里** —— 这点很容易搞错：
    *    · model3.json 的 `Motions[].Sound` 才叫「动作音效」，碧蓝这批模型**全都是空的**；
    *    · 真正会响的是**台词语音**，它挂在游戏数据上（大凤有 27 条）。
    *
    * 台词
-   *   https://l2d.su/data/ships/<CN|EN|JP|KR|TW>/<shipGroupId>.json
+   *   https://你的域名/data/ships/<CN|EN|JP|KR|TW>/<shipGroupId>.json
    *     -> ship.skins[] 里挑 prefab === 模型名 的那一项 -> .words[]
    *     -> 每条 { key, voiceName, resourceKey, voicePath, l2dAction, faceId, text }
-   *   -> 音频 https://static.l2d.su/azurlane/<voicePath>.ogg     （CORS: *）
+   *   -> 音频 https://static.你的域名/azurlane/<voicePath>.ogg     （CORS: *）
    *   皮肤 ID 与船 ID 的关系：307074 -> 30707，即 shipGroupId = floor(skinId / 10)
    *
    * 分区互动
@@ -2505,7 +2509,7 @@
   const L2D_DATA_BASE = SU_HOST + '/data/ships/CN/';
   const L2D_VOICE_BASE = HOSTS.models + '/';
 
-  /** 从模型地址取模型名（= l2d.su 的 prefab）：…/live2d/dafeng_3/dafeng_3.model3.json -> dafeng_3 */
+  /** 从模型地址取模型名（= 资源站 的 prefab）：…/live2d/dafeng_3/dafeng_3.model3.json -> dafeng_3 */
   function prefabOfUrl(url) {
     const s = String(url || '');
     const m = s.match(/\/([^/]+)\/\1\.model3\.json/i) || s.match(/\/([^/]+)\.model3\.json/i);
@@ -2520,7 +2524,7 @@
     return Number.isFinite(n) && n > 0 ? Math.floor(n / 10) : 0;
   }
 
-  /** 从用户输入里抠出皮肤 ID：`307074` / `https://l2d.su/cn/skins/307074/` */
+  /** 从用户输入里抠出皮肤 ID：`307074` / `https://你的域名/cn/skins/307074/` */
   function skinIdOfInput(input) {
     const m = String(input || '').match(/skins\/(\d{5,8})|^(\d{5,8})$/);
     if (!m) return 0;
@@ -3059,7 +3063,7 @@
         hostInput.value = HOSTS.host;
         q('.btn-host').addEventListener('click', () => {
           const v = String(hostInput.value || '').trim().replace(/\/+$/, '');
-          if (!/^https?:\/\/[^\s]+$/.test(v)) { this.setStatus('请填完整地址，例如 https://l2d.su'); return; }
+          if (!/^https?:\/\/[^\s]+$/.test(v)) { this.setStatus('请填完整地址，例如 https://你的域名'); return; }
           try { localStorage.setItem('fnos-l2d:hosts', JSON.stringify({ host: v })); } catch (e) {}
           try { indexedDB.deleteDatabase('fnos-l2d-cache'); } catch (e) {}
           this.setStatus('已切换到 ' + v + '，正在重新加载…');
@@ -3209,7 +3213,7 @@
       const list = Engine.voices || [];
       if (cnt) cnt.textContent = list.length ? list.length + ' 条' : '';
       if (!list.length) {
-        box.innerHTML = '<div class="empty">这个模型没有台词库。<br>用 <b>l2d.su 链接</b>或<b>皮肤 ID</b>（如 307074）指定模型即可。</div>';
+        box.innerHTML = '<div class="empty">这个模型没有台词库。<br>用<b>皮肤页链接</b>或<b>皮肤 ID</b>（如 307074）指定模型即可。</div>';
         return;
       }
       box.innerHTML = '';
@@ -3240,7 +3244,7 @@
       });
     },
 
-    /* ---------- 悬浮操作栏（对齐 l2d.su 的 model-floating-actions） ---------- */
+    /* ---------- 悬浮操作栏（对齐 资源站 的 model-floating-actions） ---------- */
     buildBar() {
       const bar = this.shadow.querySelector('.bar');
       if (!bar) return;
@@ -3604,7 +3608,7 @@
   .voice-line .vt { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .voices .empty { color: #6b7284; font-size: 11px; line-height: 1.6; padding: 4px 0; }
 
-  /* ---- 悬浮操作栏（对齐 l2d.su 的 model-floating-actions） ---- */
+  /* ---- 悬浮操作栏（对齐 资源站 的 model-floating-actions） ---- */
   .bar {
     position: fixed; display: none; flex-direction: column; gap: 4px;
     padding: 5px; border-radius: 14px;
@@ -3667,16 +3671,16 @@
     <div class="sec">
       <div class="sec-t">资源域名</div>
       <div class="row">
-        <input type="text" class="host-input" placeholder="https://l2d.su">
+        <input type="text" class="host-input" placeholder="https://你的资源域名">
         <button class="btn-host">应用</button>
       </div>
       <div class="hint">当前：<b class="host-now"></b><br>
         脚本的远端资源（官方运行时 / 模型 / 台词库）都从这两个域取，改完会记住并重新加载。<br>
         <b>更省事的办法</b>（不用改面板、也不用执行代码）—— 直接在引入地址后面带参数：<br>
-        <code>&lt;script src="…fnos-live2d.js?host=l2d.su"&gt;&lt;/script&gt;</code><br>
+        <code>&lt;script src="…fnos-live2d.js?host=你的域名"&gt;&lt;/script&gt;</code><br>
         <code>?host=</code> 换主域、<code>?static=</code> 换静态资源域，可简写 <code>?h=</code> / <code>?s=</code>；
         域名<b>带不带协议都行</b>（不带自动补 https://）：<br>
-        <code>?host=l2d.su</code> ／ <code>?host=http://l2d.su</code> ／ <code>?host=//镜像域</code><br>
+        <code>?host=你的域名</code> ／ <code>?host=http://你的域名</code> ／ <code>?host=//镜像域</code><br>
         也可以在注入前先执行 <code>window.__FNOS_L2D_CFG = { host: 'https://你的镜像' }</code>，
         或写成标签属性 <code>data-l2d-host="…"</code>。</div>
     </div>
@@ -3685,10 +3689,10 @@
       <div class="sec-t">当前模型</div>
       <div class="model-name">—</div>
       <div class="row">
-        <input type="text" class="model-input" placeholder="l2d.su 链接 / 皮肤ID / 模型名">
+        <input type="text" class="model-input" placeholder="皮肤链接 / 皮肤ID / 模型名">
         <button class="btn-load">载入</button>
       </div>
-      <div class="hint">可填 <code>307074</code> 或 <code>https://l2d.su/cn/skins/307074/</code></div>
+      <div class="hint">可填 <code>307074</code>（皮肤 ID）或皮肤页链接</div>
     </div>
 
     <div class="sec">
@@ -3700,7 +3704,7 @@
         <button data-quick="touch_body">摸身体</button>
         <button data-quick="random">随机一个</button>
       </div>
-      <div class="hint">对齐 l2d.su 的「快捷动画」：一键就播，不用去下面的完整动作表里翻。
+      <div class="hint">对齐 资源站 的「快捷动画」：一键就播，不用去下面的完整动作表里翻。
         「随机一个」会从该模型的非待机动作里挑一个（待机循环交给「空闲自动动作」）。</div>
     </div>
 
@@ -3732,7 +3736,7 @@
       <div class="hint"><b>快速加载</b>：启动时立刻并行预取官方运行时（约 2.5MB）与依赖库，
         省掉两段串行的等待；配合内置资源缓存，二次刷新基本几秒就能就绪。
         关掉则改成"用到才拉"（少占一点带宽，但会慢几秒）。<br>
-        <b>进入加载登录动画</b>：载入/切换模型时先播该模型的 <code>login</code> 动作（和 l2d.su 一样）。
+        <b>进入加载登录动画</b>：载入/切换模型时先播该模型的 <code>login</code> 动作（和 资源站 一样）。
         有些模型的 login 会顺手改变服饰/道具状态，不喜欢就关掉 —— 关掉后载入时只播待机。</div>
       <div class="hint"><b>简易控制栏</b>：勾上后右下角的悬浮球会直接变成一条控制栏
         （分区互动 / 声音 / 台词 / 拖动缩放 / 隐藏模型 / 还原 / 设置），点最下面的
@@ -3763,7 +3767,7 @@
       <div class="sec-t">声音</div>
       <label class="switch">声音<input type="checkbox" class="s-sound"></label>
       <label class="switch">语音联动动作<input type="checkbox" class="s-voicemotion" checked></label>
-      <div class="hint">一个开关管<b>台词语音</b>（l2d.su 游戏数据）：<br>
+      <div class="hint">一个开关管<b>台词语音</b>（资源站 游戏数据）：<br>
         · 点下面的台词列表 → 播那句（并联动它的动作）；<br>
         · <b>直接互动模型</b>（点/摸触摸区）→ 官方触发动作后自动播对应台词（headtouch→摸头台词、
         touch2→特殊触摸台词…）。<br>
@@ -3773,7 +3777,7 @@
 
     <div class="sec">
       <div class="sec-t">台词 <span class="voice-count"></span></div>
-      <div class="voices"><div class="empty">用 l2d.su 链接或皮肤 ID 指定模型后，这里会列出全部台词</div></div>
+      <div class="voices"><div class="empty">用皮肤页链接或皮肤 ID 指定模型后，这里会列出全部台词</div></div>
     </div>
   </div>
 
@@ -3815,6 +3819,21 @@
 
   async function boot() {
     perfStart();
+    // ★ 没有指定资源域名 → 直接停在这里：不联网、不注入任何依赖、不挂载。
+    if (!HOSTS.host) {
+      log('未指定资源域名 —— 已暂停加载，未发出任何网络请求');
+      log('指定方式（任选一种）：');
+      log('  ① 引入地址加参数：?host=你的域名');
+      log('  ② 注入前先设：window.__FNOS_L2D_CFG = { host: "https://你的域名" }');
+      log('  ③ 写进标签：<script src="…fnos-live2d.js" data-l2d-host="https://你的域名">');
+      bootHint('Live2D 壁纸：还没有指定资源域名，已暂停加载', true);
+      try {
+        setTimeout(function () {
+          bootHint('请在脚本地址后加 ?host=你的域名 再刷新，例如 fnos-live2d.js?host=example.com', true);
+        }, 2600);
+      } catch (e) {}
+      return;
+    }
     installPreconnect();
     log('开始初始化…');
     // 把「数据会发去哪」明明白白打出来 —— 想确认脚本在跟谁通信，看这一行
