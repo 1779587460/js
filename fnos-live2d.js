@@ -1,5 +1,5 @@
 /*!
- * fnOS Live2D 壁纸 —— 普通引入版 v1.28.0
+ * fnOS Live2D 壁纸 —— 普通引入版 v1.32.0
  *
  * 用法：不用油猴，直接在网页里引这个文件（放在 <head> 或 <body> 末尾都行）：
  *     <script src="/static/fnos-live2d.js"></script>
@@ -36,7 +36,7 @@
   if (window.__fnosL2DPlainLoaded) return;
   window.__fnosL2DPlainLoaded = true;
 
-  const VERSION = '1.28.0';
+  const VERSION = '1.32.0';
 
   /* ------------------------------------------------------------ *
    * 0. 探针：只要控制台出现下面这一行，就证明脚本确实被注入了。
@@ -77,7 +77,159 @@
    * ============================================================ */
 
   const LS_KEY = 'fnos-live2d:config:v1';
-  const STATIC_BASE = 'https://static.l2d.su/azurlane';
+  /* ============================================================ *
+   * 资源域名（v1.31）：可配置，不写死
+   *
+   * 为什么要可配：脚本的远端资源（官方运行时、模型、台词库）都来自 l2d.su 这一套域名。
+   * 万一它被墙 / 换域名 / 关站 / 你想走镜像，不该只能等我们发版。
+   *
+   * 五个来源，优先级从高到低：
+   *   ⓪ 脚本自己的 URL 查询参数    —— <script src="…fnos-live2d.js?host=l2d.su">
+   *        支持 ?host= 与 ?static=（也可简写 ?h= / ?s=）；
+   *        域名可以不带协议（自动补 https://），也支持 http:// 与协议相对的 //；
+   *        带路径/尾斜杠都会自动规整成 origin。想临时切换镜像，改这一个参数即可。
+   *   ① window.__FNOS_L2D_CFG      —— 控制台注入前先设，最灵活
+   *         window.__FNOS_L2D_CFG = { host: 'https://l2d.su', staticHost: 'https://static.l2d.su' };
+   *   ② <script data-l2d-host="…" data-l2d-static="…">  —— 直接写进网页源码时用
+   *   ③ localStorage['fnos-l2d:hosts'] —— 面板里改过就记住
+   *   ④ 内置默认
+   *
+   * 只填 host 也可以：staticHost 会按 '://static.' 的规则推导（对 l2d.su 这一套是成立的）。
+   * 另外每次启动都会在日志里打印「实际使用的域名」—— 想知道数据发去哪了，看那一行即可。
+   * ============================================================ */
+  /**
+   * 把用户填的域名规整成合法 origin（v1.32）。
+   * 智能识别有没有协议头，几种写法都认：
+   *   l2d.su              → https://l2d.su
+   *   //l2d.su            → （沿用当前页协议）
+   *   http://l2d.su       → http://l2d.su
+   *   https://l2d.su/     → https://l2d.su      （尾斜杠丢掉）
+   *   https://l2d.su/a/b  → https://l2d.su      （路径丢掉，只留 origin）
+   * 认不出来的返回空串，由调用方决定要不要回退。
+   */
+  // 用来"在 DOM / 堆栈里认出自己那份脚本"的特征（文件名固定，不受 CDN/路径影响）
+  const SELF_SRC_RE = /fnos-live2d/i;
+  const SELF_URL_IN_STACK_RE = /(https?:\/\/[^\s)]*fnos-live2d[^\s)]*)/i;
+
+  function normalizeOrigin(input, fallbackProto) {
+    let v = String(input == null ? '' : input).trim();
+    if (!v) return '';
+    if (v.indexOf('//') === 0) v = (fallbackProto || location.protocol) + v;   // //l2d.su
+    else if (!/^https?:\/\//i.test(v)) v = 'https://' + v;                   // l2d.su → 补 https
+    try {
+      const u = new URL(v);
+      if (!u.hostname) return '';
+      return u.origin;
+    } catch (e) { return ''; }
+  }
+
+  const HOSTS = (function readHosts() {
+    const norm = (x) => String(x || '').trim().replace(/\/+$/, '');
+    const deriveStatic = (h) => {
+      const m = /^(https?:\/\/)(.+)$/.exec(h || '');
+      return m ? m[1] + 'static.' + m[2] : '';
+    };
+    const def = { host: 'https://l2d.su', staticHost: 'https://static.l2d.su' };
+    const out = { host: '', staticHost: '', from: 'default' };
+
+    // ④ 默认
+    out.host = def.host;
+    out.staticHost = def.staticHost;
+
+    // ⓪ 脚本自己的 URL 查询参数（优先级最高）—— <script src="…?host=l2d.su">
+    //    三种方式找回「我自己的 URL」，按可靠性排序：
+    //      a) document.currentScript —— 写在 HTML 里的静态标签最准；
+    //      b) 在 DOM 里找回自己 —— ★主要靠这条：
+    //         动态创建的 <script>（document.createElement + appendChild）**默认 async = true**，
+    //         而 async 脚本执行期间 document.currentScript 是 **null** ——
+    //         偏偏最常见的用法就是动态创建，所以必须能"从 DOM 里认出自己"（靠 src 里的特征词）。
+    //      c) 从错误堆栈里抠 —— 兜底，前两条都拿不到时用。
+    //    注意：这段必须在 IIFE 顶层同步执行（此刻脚本标签还在 DOM 里，跑完也没关系）。
+    try {
+      // 先把所有"可能是我自己"的 URL 收集起来，再挑出**带 host/static 参数的那个**。
+      //   为什么不"找到第一个就用"：document.currentScript 有时会指向别的正在执行的脚本
+      //   （非 null 但不是我们），一旦认定它就会跳过后面的 DOM 查找 —— 参数就白写了。
+      //   实测踩过这个坑：日志里一直是「来源：default」。
+      const cands = [];
+      try {
+        const cs = document.currentScript;
+        if (cs && cs.src) cands.push(cs.src);
+      } catch (e) {}
+      try {
+        const tags = document.querySelectorAll('script[src]');
+        for (let i = 0; i < tags.length; i++) {
+          const raw = tags[i].getAttribute('src') || '';
+          if (SELF_SRC_RE.test(raw)) cands.push(new URL(raw, location.href).href);
+        }
+      } catch (e) {}
+      try {
+        const m = SELF_URL_IN_STACK_RE.exec(String(new Error().stack || ''));
+        if (m) cands.push(m[1]);
+      } catch (e) {}
+
+      let selfUrl = '';
+      for (let i = 0; i < cands.length; i++) {
+        try {
+          const u0 = new URL(cands[i], location.href);
+          if (u0.searchParams.get('host') || u0.searchParams.get('h') ||
+              u0.searchParams.get('static') || u0.searchParams.get('s')) { selfUrl = cands[i]; break; }
+        } catch (e) {}
+      }
+      if (!selfUrl && cands.length) selfUrl = cands[0];
+
+      if (selfUrl) {
+        const u = new URL(selfUrl, location.href);
+        const rawHost = u.searchParams.get('host') || u.searchParams.get('h');
+        const rawStatic = u.searchParams.get('static') || u.searchParams.get('s');
+        if (rawHost || rawStatic) {
+          const ho = normalizeOrigin(rawHost, u.protocol);
+          const so = normalizeOrigin(rawStatic, u.protocol);
+          if (ho) {
+            out.host = ho;
+            out.staticHost = so || deriveStatic(ho);
+            out.from = '脚本 URL 参数';
+          } else if (so) {
+            out.staticHost = so;
+            out.from = '脚本 URL 参数';
+          }
+          out.src = selfUrl;
+        }
+      }
+    } catch (e) {}
+
+    // ③ localStorage
+    try {
+      const j = JSON.parse(localStorage.getItem('fnos-l2d:hosts') || 'null');
+      if (j && j.host) { out.host = norm(j.host); out.staticHost = norm(j.staticHost) || deriveStatic(out.host); out.from = 'localStorage'; }
+    } catch (e) {}
+
+    // ② <script data-l2d-host="…">
+    try {
+      const tags = document.querySelectorAll('script[data-l2d-host]');
+      for (let i = 0; i < tags.length; i++) {
+        const h = norm(tags[i].getAttribute('data-l2d-host'));
+        if (h) { out.host = h; out.staticHost = norm(tags[i].getAttribute('data-l2d-static')) || deriveStatic(h); out.from = 'script 标签'; break; }
+      }
+    } catch (e) {}
+
+    // ① window.__FNOS_L2D_CFG
+    try {
+      const g = window.__FNOS_L2D_CFG;
+      if (g && typeof g === 'object') {
+        if (g.host) { out.host = norm(g.host); out.staticHost = norm(g.staticHost) || deriveStatic(out.host); out.from = 'window.__FNOS_L2D_CFG'; }
+        else if (g.staticHost) { out.staticHost = norm(g.staticHost); out.from = 'window.__FNOS_L2D_CFG'; }
+      }
+    } catch (e) {}
+
+    // 派生：模型目录挂在 static 域下
+    out.models = out.staticHost + '/azurlane';
+    if (!out.staticHost) { out.staticHost = deriveStatic(out.host); out.models = out.staticHost + '/azurlane'; }
+    return out;
+  })();
+
+  const STATIC_BASE = HOSTS.models;                     // 例：https://static.l2d.su/azurlane
+  const SU_HOST = HOSTS.host;                           // 例：https://l2d.su
+  const SU_ASSETS = SU_HOST + '/assets/';
   const L2D_BASE = STATIC_BASE + '/live2d';
 
   // 各依赖的备用 CDN（按顺序尝试）
@@ -96,8 +248,10 @@
       'https://unpkg.com/pixi-live2d-display-mulmotion@0.5.0-mm-6/dist/cubism4.min.js',
     ],
     core: [
-      'https://l2d.su/lib/live2dcubismcore.min.js?v=5.1.0',
+      // 顺序按真机实测调过（v1.29）：用户网络下 l2d.su 与 jsdelivr 的这条路径都容易超时，
+      // 官方 CDN 反而最稳，所以放第一位，省掉两个 6 秒的超时等待。
       'https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js',
+      SU_HOST + '/lib/live2dcubismcore.min.js?v=5.1.0',
       'https://fastly.jsdelivr.net/npm/live2dcubismcore@1.0.2/live2dcubismcore.min.js',
     ],
   };
@@ -365,7 +519,8 @@
    * 注意：带 Range 的请求（读 moc3 头部之类）一律不走缓存 —— 我们存的是全量
    * blob，回 200 而不是 206 会让调用方算错。
    * ------------------------------------------------------------ */
-  const MODEL_ASSET_RE = /^https:\/\/static\.l2d\.su\/azurlane\//i;
+  // 用配置的 static 域动态构造（原来写死 static.l2d.su，换镜像后就匹配不上了）
+  const MODEL_ASSET_RE = new RegExp('^' + HOSTS.models.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '/', 'i');
   function installModelAssetCache() {
     if (window.__fnosAssetCache) return;
     window.__fnosAssetCache = true;
@@ -383,6 +538,17 @@
         }
         if (init && init.method && String(init.method).toUpperCase() !== 'GET') hasRange = true;
       } catch (e) { hasRange = true; }
+      // 保底模式专属（v1.30）：官方 React 应用被挂到游离节点后会请求它自己的资源
+      // （gem.png、data/ships-CN.json —— 都是相对路径，会打到宿主域名上）。
+      // 这些请求没有任何用处，只会把控制台刷满 404，所以直接就地静默掉，不真正发出去。
+      if (window.__fnosGuardMode) {
+        try {
+          const u = new URL(url, location.href);
+          if (u.origin === location.origin && /^\/(gem\.png|data\/[Ss]hips)/.test(u.pathname)) {
+            return Promise.resolve(new Response('', { status: 404, statusText: 'blocked (guard mode)' }));
+          }
+        } catch (e) {}
+      }
       if (hasRange || !MODEL_ASSET_RE.test(url)) return origFetch(input, init);
 
       // 模型资源是静态 CDN 内容，**键不带脚本版本号** —— 脚本升级后模型缓存依然有效
@@ -562,7 +728,7 @@
 
   const Resolver = {
     async fromSkinId(id) {
-      const res = await fetch('https://l2d.su/cn/skins/' + id + '/', { credentials: 'omit' });
+      const res = await fetch(SU_HOST + '/cn/skins/' + id + '/', { credentials: 'omit' });
       if (!res.ok) throw new Error('皮肤页请求失败 HTTP ' + res.status);
       const html = await res.text();
 
@@ -652,7 +818,7 @@
 
     const found = new Map();
     try {
-      const html = await (await fetch('https://l2d.su/cn/', { credentials: 'omit' })).text();
+      const html = await (await fetch(SU_HOST + '/cn/', { credentials: 'omit' })).text();
       const entry = (html.match(/\/assets\/(index-[A-Za-z0-9_-]{6,}\.js)/) || [])[1];
       const queue = [];
       if (entry) { found.set('index', entry); queue.push(entry); }
@@ -660,7 +826,7 @@
       for (let depth = 0; depth < 2 && queue.length; depth++) {
         const batch = queue.splice(0, queue.length);
         const texts = await Promise.all(batch.map((n) =>
-          fetchTextCached('https://l2d.su/assets/' + n).catch(() => '')));
+          fetchTextCached(SU_ASSETS + n).catch(() => '')));
         for (const t of texts) {
           for (const name of extractChunkNames(t)) {
             const p = name.split('-')[0];
@@ -707,20 +873,20 @@
         //  "Unable to preload CSS" → 整个模型载入 reject（v1.20 的坑）。
         //  ⚠️ 曾经的错误做法：patch Kt 去拼 __SU_ASSET_BASE，结果拼出
         //     /azurlane/assets/x.css 必 404。
-        window.__SU_ASSET_BASE = window.__SU_ASSET_BASE || 'https://l2d.su/';
+        window.__SU_ASSET_BASE = window.__SU_ASSET_BASE || (SU_HOST + '/');
         if (!window.__SU_RESOLVE) {
           window.__SU_RESOLVE = function (x) {
             try {
               const s = String(x);
-              if (s.indexOf('/assets/') === 0) return 'https://l2d.su' + s;
-              if (s.indexOf('assets/') === 0) return 'https://l2d.su/' + s;
+              if (s.indexOf('/assets/') === 0) return SU_HOST + s;
+              if (s.indexOf('assets/') === 0) return SU_HOST + '/' + s;
               return s;
             } catch (e) { return x; }
           };
         }
         // 官方 index 强依赖这个全局（站点从 <meta name="static-asset-origin"> 读），
         // 它专供 Wt（模型域），不要拿去拼 chunk。
-        window.__STATIC_ASSET_ORIGIN__ = window.__STATIC_ASSET_ORIGIN__ || 'https://static.l2d.su';
+        window.__STATIC_ASSET_ORIGIN__ = window.__STATIC_ASSET_ORIGIN__ || HOSTS.staticHost;
         // ── 样式表隔离（v1.21）────────────────────────────────────────────
         // 官方 index-CP7FX-Bo.css 有 78KB，含 `*` / `body` / `:root` / `h1~h6` 等
         // 全局选择器，原样 append 到 fnOS 桌面会污染整个系统 UI。
@@ -775,7 +941,7 @@
         }
         installRouteGuard();   // 双保险：万一清洗失效，也不让页面被导航走（见函数注释）
         await ensureCore();
-        const BASE = 'https://l2d.su/assets/';
+        const BASE = SU_ASSETS;
         const chunkNames = await resolveSuChunks();      // ★ 动态解析，避免写死的哈希过期
         const texts = {};
         const failures = [];
@@ -801,7 +967,7 @@
 
         let idx = texts[idxName];
 
-        // ★★ 最关键的一处清洗（v1.28 重写）：**必须切掉官方 React 应用的挂载调用**。
+        // ★★ 最关键的一处清洗（v1.29 重写第三版）：**必须切掉官方 React 应用的挂载调用**。
         //
         // 为什么：官方 index chunk 末尾会执行
         //     (0x0,v['createRoot'])(document['getElementById']('root')).render(<App/>)
@@ -815,17 +981,47 @@
         //    把参数名混淆成 document[_0x2699df(0x2ec)] 就失配 → **静默失效**，
         //    于是上面那些灾难症状全出来了。现在改成：只认稳定的锚点
         //    「(0x0,xxx[createRoot])(」这个锚点，然后按**语句边界**把整条调用截掉。
+        // 三层定位，从最精确到最宽松（l2d.su 每次重建，混淆程度都在变，实测过两次失效）：
+        //   ① 认 createRoot 字面量 —— 最精确，但对方已把属性名也混淆掉（v[_0x...(0x288)]）
+        //   ② 结构法：挂载调用在文件末尾、紧跟 export{ 之前，形如
+        //        (0x0, xxx)(document[...])(...)['render'](...)
+        //      于是「最后一个 ['render'] → 往前找最近的 (0x0, → 回退到语句起点」就能稳定命中。
+        //      这一层只依赖 Vite 生成的调用形状（与业务代码混淆无关），是真正耐用的依据。
+        //   ③ 都失败 → 中止加载（宁可不显示模型，也不能让官方应用挂载、把页面劫持走）
+        let cutFrom = -1;
+        let how = '';
         const CR_ANCHOR = /\(0x0,\s*[\w$]+\[['"]createRoot['"]\]\)\(/;
         const cr = CR_ANCHOR.exec(idx);
         if (cr) {
           let s0 = cr.index;
-          while (s0 > 0 && ';}'.indexOf(idx.charAt(s0 - 1)) < 0) s0--;   // 回退到语句起点
-          const e0 = idx.indexOf('export{', cr.index);
-          idx = idx.slice(0, s0) + 'void 0;' + (e0 > 0 ? idx.slice(e0) : '');
-          log('已切掉官方应用的挂载调用（保护当前页面不被接管）');
+          while (s0 > 0 && ';}'.indexOf(idx.charAt(s0 - 1)) < 0) s0--;
+          cutFrom = s0;
+          how = 'createRoot 锚点';
+        }
+        if (cutFrom < 0) {
+          const ri = idx.lastIndexOf("['render']");
+          const e0i = idx.lastIndexOf('export{');
+          if (ri > 0 && e0i > ri) {
+            const k = idx.lastIndexOf('(0x0,', ri);
+            if (k > 0) {
+              let s0 = k;
+              while (s0 > 0 && ';}'.indexOf(idx.charAt(s0 - 1)) < 0) s0--;
+              cutFrom = s0;
+              how = 'render 结构定位';
+            }
+          }
+        }
+        // 两种锚点都没命中 → 不再中止，转入下面的「保底模式」（拦截 #root）：
+        // 那一层不依赖任何代码结构，任何写法都能兜住，所以没必要牺牲功能。
+        let needGuard = false;
+        if (cutFrom < 0) {
+          needGuard = true;
+          window.__fnosGuardMode = true;   // 供 fetch 拦截判断（见下）
+          log('⚠️ 两种锚点都没命中官方挂载调用 —— 转入保底模式（拦截 #root + 路由守卫）');
         } else {
-          // 连锚点都找不到说明结构又变了 —— 这时**宁可不加载**，也不能把用户页面搞坏
-          throw new Error('无法定位官方应用的挂载调用（l2d.su 结构可能又变了），已中止加载以保护当前页面');
+          const e0 = idx.lastIndexOf('export{');
+          idx = idx.slice(0, cutFrom) + 'void 0;' + (e0 > cutFrom ? idx.slice(e0) : '');
+          log('已切掉官方应用的挂载调用（' + how + '，保护当前页面不被接管）');
         }
         // ⚠️ 千万不要 patch Kt。它的原意就是 `'/' + x`（把 'assets/x.css' 变成
         // '/assets/x.css'），供 Vite 预加载解析绝对路径用。曾经 patch 成拼资源域，
@@ -850,7 +1046,7 @@
             if (done[f] || !deps[f].every((d) => done[d])) continue;
             let t = texts[f];
             t = t.split('import.meta.resolve').join('window.__SU_RESOLVE');
-            t = t.replace(/(['"\x60])\/assets\//g, '$1https://l2d.su/assets/');
+            t = t.replace(/(['"\x60])\/assets\//g, '$1' + SU_ASSETS);
             t = t.replace(STATIC, function (mm, q, pre, name) {
               return window.__FNOS_MODS[name] ? ('from' + q + window.__FNOS_MODS[name] + q) : mm;
             });
@@ -861,9 +1057,39 @@
         }
         const undone = chunkNames.filter((f) => !done[f]);
         if (undone.length) throw new Error('官方运行时依赖无法解析：' + undone.join(','));
-        const PIXI = await import(window.__FNOS_MODS[libName]);
-        await import(window.__FNOS_MODS[l2dName]);
-        const mr = await import(window.__FNOS_MODS[mrName]);
+        // 保底模式（不依赖任何代码结构，v1.30）：
+        //   官方模块执行时若挂载失败会**直接抛错**，整个模块图就废了 —— 所以不能让它拿不到节点，
+        //   而是给它一个**游离节点**（不在文档里的 div）：React 老实地挂上去，我们的页面毫发无伤，
+        //   模块导出也照常完成。配合路由守卫，它连地址栏都改不了。
+        //
+        // 为什么敢临时替换 document.getElementById：
+        //   三个 chunk 的代码都已在本内存里（blob URL），整张模块图会在同一次微任务内执行完，
+        //   期间不会让出给飞牛自己的代码，所以不会误伤宿主；而且 finally 里立刻还原。
+        const realGetById = document.getElementById;
+        const realQuery = document.querySelector;
+        const decoyRoot = document.createElement('div');
+        if (needGuard) {
+          document.getElementById = function (id) {
+            if (String(id) === 'root') return decoyRoot;
+            return realGetById.apply(document, arguments);
+          };
+          document.querySelector = function (sel) {
+            if (String(sel) === '#root') return decoyRoot;
+            return realQuery.apply(document, arguments);
+          };
+        }
+        let PIXI, mr;
+        try {
+          PIXI = await import(window.__FNOS_MODS[libName]);
+          await import(window.__FNOS_MODS[l2dName]);
+          mr = await import(window.__FNOS_MODS[mrName]);
+        } finally {
+          if (needGuard) {
+            document.getElementById = realGetById;
+            document.querySelector = realQuery;
+            log('保底拦截已撤下（页面节点在拦截期间未被占用）');
+          }
+        }
         self.mods = { PIXI: PIXI.t, WikiModelViewer: mr.WikiModelViewer };
         self.ready = true;
         log('官方引擎就绪：PIXI v' + ((PIXI.t && PIXI.t.VERSION) || '?') + '，WikiModelViewer 已加载');
@@ -891,7 +1117,7 @@
       history[name] = function (st, title, url) {
         try {
           const u = String(url == null ? '' : url);
-          if (u && /(^|\/)cn(\/|$|\?|#)/.test(u) && location.hostname !== 'l2d.su') {
+          if (u && /(^|\/)cn(\/|$|\?|#)/.test(u) && location.hostname !== HOSTS.host.replace(/^https?:\/\//, '')) {
             log('已拦截官方路由跳转 → ' + u + '（保护当前页面不被导航走）');
             return undefined;
           }
@@ -2276,8 +2502,8 @@
    *   即「在某个 ArtMesh 上拖拽 -> 驱动某个 Cubism 参数」。碧蓝航线原版的触摸区就是这个机制，
    *   **不是**「点不同区域播不同动作」。
    * ============================================================ */
-  const L2D_DATA_BASE = 'https://l2d.su/data/ships/CN/';
-  const L2D_VOICE_BASE = 'https://static.l2d.su/azurlane/';
+  const L2D_DATA_BASE = SU_HOST + '/data/ships/CN/';
+  const L2D_VOICE_BASE = HOSTS.models + '/';
 
   /** 从模型地址取模型名（= l2d.su 的 prefab）：…/live2d/dafeng_3/dafeng_3.model3.json -> dafeng_3 */
   function prefabOfUrl(url) {
@@ -2824,6 +3050,22 @@
       bindSwitch('.s-zoneshow', 'zoneShow', () => Engine.applyOfficialSettings());
       bindSwitch('.s-sound', 'sound', () => { applySoundSetting(); if (!Store.cfg.sound) Engine.stopVoice(); });
       bindSwitch('.s-voicemotion', 'voiceMotion');
+
+      // 资源域名：改完存 localStorage 并重载（域名变了，之前的资源缓存也用不上了）
+      const hostInput = q('.host-input');
+      const hostNow = q('.host-now');
+      if (hostNow) hostNow.textContent = HOSTS.host + ' ／ ' + HOSTS.staticHost;
+      if (hostInput) {
+        hostInput.value = HOSTS.host;
+        q('.btn-host').addEventListener('click', () => {
+          const v = String(hostInput.value || '').trim().replace(/\/+$/, '');
+          if (!/^https?:\/\/[^\s]+$/.test(v)) { this.setStatus('请填完整地址，例如 https://l2d.su'); return; }
+          try { localStorage.setItem('fnos-l2d:hosts', JSON.stringify({ host: v })); } catch (e) {}
+          try { indexedDB.deleteDatabase('fnos-l2d-cache'); } catch (e) {}
+          this.setStatus('已切换到 ' + v + '，正在重新加载…');
+          setTimeout(() => location.reload(), 700);
+        });
+      }
 
       // 快捷动画（对齐官方 UI 的 Quick animations）
       qa('[data-quick]').forEach((b) => {
@@ -3423,6 +3665,23 @@
 
   <div class="body">
     <div class="sec">
+      <div class="sec-t">资源域名</div>
+      <div class="row">
+        <input type="text" class="host-input" placeholder="https://l2d.su">
+        <button class="btn-host">应用</button>
+      </div>
+      <div class="hint">当前：<b class="host-now"></b><br>
+        脚本的远端资源（官方运行时 / 模型 / 台词库）都从这两个域取，改完会记住并重新加载。<br>
+        <b>更省事的办法</b>（不用改面板、也不用执行代码）—— 直接在引入地址后面带参数：<br>
+        <code>&lt;script src="…fnos-live2d.js?host=l2d.su"&gt;&lt;/script&gt;</code><br>
+        <code>?host=</code> 换主域、<code>?static=</code> 换静态资源域，可简写 <code>?h=</code> / <code>?s=</code>；
+        域名<b>带不带协议都行</b>（不带自动补 https://）：<br>
+        <code>?host=l2d.su</code> ／ <code>?host=http://l2d.su</code> ／ <code>?host=//镜像域</code><br>
+        也可以在注入前先执行 <code>window.__FNOS_L2D_CFG = { host: 'https://你的镜像' }</code>，
+        或写成标签属性 <code>data-l2d-host="…"</code>。</div>
+    </div>
+
+    <div class="sec">
       <div class="sec-t">当前模型</div>
       <div class="model-name">—</div>
       <div class="row">
@@ -3543,7 +3802,7 @@
    */
   function installPreconnect() {
     try {
-      ['https://l2d.su', 'https://static.l2d.su', 'https://cdn.jsdelivr.net', 'https://fastly.jsdelivr.net',
+      [SU_HOST, HOSTS.staticHost, 'https://cdn.jsdelivr.net', 'https://fastly.jsdelivr.net',
        'https://cubism.live2d.com'].forEach(function (h) {
         const l = document.createElement('link');
         l.rel = 'preconnect';
@@ -3558,6 +3817,9 @@
     perfStart();
     installPreconnect();
     log('开始初始化…');
+    // 把「数据会发去哪」明明白白打出来 —— 想确认脚本在跟谁通信，看这一行
+    log('资源域名：' + HOSTS.host + '（静态资源 ' + HOSTS.staticHost + '，来源：' + HOSTS.from + '）');
+    if (HOSTS.src) log('脚本地址：' + HOSTS.src);
     bootHint('Live2D：正在加载依赖…');
     Store.load();
     installModelAssetCache();   // 越早越好：官方 viewer 的所有资源请求都要经过它
