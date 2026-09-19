@@ -1,5 +1,5 @@
 /*!
- * fnOS Live2D 壁纸 —— 普通引入版 v1.33.0
+ * fnOS Live2D 壁纸 —— 普通引入版 v1.40.0
  *
  * 用法：不用油猴，直接在网页里引这个文件（放在 <head> 或 <body> 末尾都行）：
  *     <script src="/static/fnos-live2d.js"></script>
@@ -36,7 +36,7 @@
   if (window.__fnosL2DPlainLoaded) return;
   window.__fnosL2DPlainLoaded = true;
 
-  const VERSION = '1.33.0';
+  const VERSION = '1.40.0';
 
   /* ------------------------------------------------------------ *
    * 0. 探针：只要控制台出现下面这一行，就证明脚本确实被注入了。
@@ -49,12 +49,10 @@
   }
   try {
     console.log(
-      '%c[Live2D]%c 脚本已注入 v' + VERSION,
+      '%c[Live2D]%c 脚本已注入 v' + VERSION +
+      '   （详细日志：fnosLive2D.logs ／ 加 ?l2dlog=1 可全量打印）',
       'color:#7c5cff;font-weight:bold',
-      'color:inherit',
-      '\n  URL        = ' + location.href +
-      '\n  readyState = ' + document.readyState +
-      '\n  提示：调 window.fnosLive2D.logs 可看全部记录'
+      'color:inherit'
     );
   } catch (e) {}
 
@@ -239,6 +237,9 @@
   // 各依赖的备用 CDN（按顺序尝试）
   const CDN = {
     pixi: [
+      // ★ npmmirror（淘宝 npm 镜像）实测最快：同一文件 0.10s，jsdelivr 1.18s、bootcdn 0.93s。
+      //   注意它只对**热门包**提供 /files/ 直取；冷门包会 403（所以下面 live2d 那条没加它）。
+      'https://registry.npmmirror.com/pixi.js/7.4.3/files/dist/pixi.min.js',
       'https://fastly.jsdelivr.net/npm/pixi.js@7.4.3/dist/pixi.min.js',
       'https://cdn.jsdelivr.net/npm/pixi.js@7.4.3/dist/pixi.min.js',
       'https://unpkg.com/pixi.js@7.4.3/dist/pixi.min.js',
@@ -247,15 +248,23 @@
     live2d: [
       // ⚠️ 必须用 mulmotion 分支：它带了 Cubism5 的 getDrawableInvertedMaskBit /
       //    mocVersion 支持（官方 0.4.0 遇到 moc3 v5（Live2D+）模型会整块丢渲染）
+      //
+      // ⚠️ 这条**故意不加 npmmirror**：该分支太冷门，镜像没有文件索引，
+      //    /files/ 路径一律 403 —— 加了只会每次白等一轮失败，反而更慢。
       'https://fastly.jsdelivr.net/npm/pixi-live2d-display-mulmotion@0.5.0-mm-6/dist/cubism4.min.js',
       'https://cdn.jsdelivr.net/npm/pixi-live2d-display-mulmotion@0.5.0-mm-6/dist/cubism4.min.js',
       'https://unpkg.com/pixi-live2d-display-mulmotion@0.5.0-mm-6/dist/cubism4.min.js',
     ],
     core: [
-      // 顺序按真机实测调过（v1.29）：用户网络下 资源站 与 jsdelivr 的这条路径都容易超时，
+      // 顺序按真机实测调过（v1.29）：用户网络下资源站与 jsdelivr 的这条路径都容易超时，
       // 官方 CDN 反而最稳，所以放第一位，省掉两个 6 秒的超时等待。
+      //
+      // ⚠️ 为什么**不用 npmmirror**（v1.34 实测）：镜像上的 live2dcubismcore 最新只到
+      //    **1.0.2**（Cubism 4 时代），而本脚本要 **Cubism 5.1.0** —— 旧版 Core 打开
+      //    moc3 v5 模型会直接报错，不是"降级能用"。所以这一条不给它高优先级，也不加它。
       'https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js',
       SU_HOST + '/lib/live2dcubismcore.min.js?v=5.1.0',
+      // 最后这条同样是 1.0.2，仅在"官方与资源站都不可达"时作最坏兜底（老模型还能用）
       'https://fastly.jsdelivr.net/npm/live2dcubismcore@1.0.2/live2dcubismcore.min.js',
     ],
   };
@@ -273,6 +282,7 @@
     mirror: false,
     follow: true,      // 视线跟随鼠标（自研驱动 focusController，幅度明显）
     fastLoad: true,    // 快速加载：启动即并行预热官方运行时（省掉与依赖库串行等待的那几秒）
+    forceLibs: false,  // 排查用：强制回退加载外挂渲染库（正常不需要 —— 官方运行时就自带渲染层）
     entryLogin: true,  // 载入模型时播 login 动作（像 资源站 那样"进门就有登录演出"）；关掉则播待机
     breath: true,      // 呼吸（官方 setLive2DBreathing）
     blink: true,       // 眨眼（官方 setLive2DEyeBlinking）
@@ -318,8 +328,41 @@
 
   function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
 
+  /* ------------------------------------------------------------ *
+   * 日志（v1.40 精简）
+   *
+   * 以前每条 log() 都直接 console.log → 一次启动刷出 30+ 行，用户看不过来，
+   * 真正重要的几行（域名、就绪、报错）反而被淹掉。
+   *
+   * 现在分两级：
+   *   · 全部日志照旧进 LOGS 环形缓冲，控制台随时 fnosLive2D.logs 取全量；
+   *   · 只有「关键行」才真的打到控制台 —— 由 QUIET 开关控制：
+   *       - 默认 QUIET = true  → 控制台只留 ≤10 行关键信息
+   *       - ?l2dlog=1 / window.__FNOS_L2D_VERBOSE = true → 恢复全量（排查时用）
+   *   · errlog 永远不被静音 —— 出问题必须看得见。
+   * ------------------------------------------------------------ */
+  const VERBOSE = (function () {
+    try {
+      if (/[?&](l2dlog|verbose)=1\b/.test(location.search)) return true;
+      if (window.__FNOS_L2D_VERBOSE === true) return true;
+    } catch (e) {}
+    return false;
+  })();
+
+  // 关键行白名单：只有命中这些关键词的 log() 才会打到控制台。
+  // 挑的都是「一眼能判断脚本活没活、卡在哪、有没有被劫持」的信息。
+  // ⚠️ 刻意不包含「缓存命中」「跳过移除」「视线跟随」这类高频/细节行 ——
+  //    它们在缓冲里都还在，加 ?l2dlog=1 就能看到全量。
+  const KEY_RE = /^(脚本|资源域名|已就绪|✅|⚠️|官方引擎：模型已就绪|加载耗时|壁纸层|找到壁纸层|挂载后|已拦截|已切掉|当前是登录页)/;
+
   function log(...a) {
     rawLog('log', a);
+    if (!VERBOSE) {
+      // 非关键行只进缓冲，不刷控制台
+      let s = '';
+      try { s = a.map((v) => String(v)).join(' '); } catch (e) {}
+      if (!KEY_RE.test(s)) return;
+    }
     try { console.log('%c[Live2D]', 'color:#7c5cff;font-weight:bold', ...a); } catch (e) {}
   }
 
@@ -646,29 +689,48 @@
    * 注意：pixi-live2d-display 会在「首次载入模型」时才检查 window.Live2DCubismCore，
    * 所以 Core 只要在 Live2DModel.from() 之前到位即可。
    */
+  /**
+   * 启动时的依赖加载（本次改动 起**只加载 Cubism Core**）。
+   *
+   * ★ 为什么不再外挂 PIXI 和 pixi-live2d-display ★
+   *
+   * 实测（把两个库都去掉、只留 Core 跑了一遍）：
+   *   · 官方运行时 chunk 执行后会把**完整 PIXI（7.4.3）挂到 window.PIXI** —— 版本与我们外挂的一致；
+   *   · 官方运行时**自带渲染层**，全程 「PIXI.live2d」 都是 false，它照样能把模型渲染出来
+   *     （模型就绪、命中区 5 个、零报错）。
+   *   · 依赖库阶段因此从 6.2s 降到 1.8s，另外少下 416KB + 350KB。
+   *
+   * 但 PIXI 由官方 chunk 提供有个前提：**必须先 import 它**。所以这两个库的加载
+   * 挪到了 SuStack.load() 之后（见 ensureLibsFallback），并保留成"缺了才补"的回退。
+   */
   async function ensureLibs() {
     if (!window.Live2DCubismCore) {
       log('① 加载 Live2D Cubism Core…');
       await ensureCore();
     }
-    if (!window.Live2DCubismCore) throw new Error('Live2D Cubism Core 加载失败——可能是网络无法访问 CDN');
-    log('① Cubism Core 就绪');
-
-    if (!window.PIXI) {
-      log('② 加载 PIXI…');
-      await injectScript(CDN.pixi);
+    if (!window.Live2DCubismCore) {
+      throw new Error('Live2D Cubism Core 加载失败——可能是网络无法访问 CDN');
     }
-    if (!window.PIXI) throw new Error('PIXI 加载失败——可能是网络无法访问 CDN');
-    log('② PIXI 就绪 v' + (window.PIXI.VERSION || '?'));
+    log('① Cubism Core 就绪（PIXI / 渲染库由官方运行时自带，随 chunk 一起就绪）');
+  }
 
-    if (!window.PIXI.live2d || !window.PIXI.live2d.Live2DModel) {
-      log('③ 加载 Live2D 渲染库（mulmotion / Cubism5）…');
+  /**
+   * 回退：官方运行时没能提供 PIXI 时，才去外挂加载（本次改动）。
+   * 只能在 SuStack.load() 之后调用 —— 那一刻才知道官方到底给不给。
+   */
+  async function ensureLibsFallback() {
+    if (!window.PIXI) {
+      log('⚠️ 官方运行时没有提供 PIXI，回退到外挂加载…');
+      await injectScript(CDN.pixi);
+      if (!window.PIXI) throw new Error('PIXI 加载失败——官方未提供且 CDN 也不可达');
+      log('② 回退加载 PIXI 成功 v' + (window.PIXI.VERSION || '?'));
+    }
+    // 官方不挂 PIXI.live2d（它自带渲染层），所以这里默认什么都不做；
+    // 只有显式打开 forceLibs（排查用）才补一个外挂渲染库。
+    if ((!window.PIXI.live2d || !window.PIXI.live2d.Live2DModel) && Store.cfg.forceLibs === true) {
+      log('③ 按设置回退加载 Live2D 渲染库（mulmotion / Cubism5）…');
       await injectScript(CDN.live2d);
     }
-    if (!window.PIXI.live2d || !window.PIXI.live2d.Live2DModel) {
-      throw new Error('Live2D 渲染库加载失败——可能是网络无法访问 CDN');
-    }
-    log('③ pixi-live2d-display 就绪');
   }
 
   /* ============================================================ *
@@ -679,8 +741,19 @@
     cfg: Object.assign({}, DEFAULT_CFG),
     load() {
       try {
+        // 配置结构可能来自更旧的版本（只有一部分字段）——先补全再覆盖，
+        // 否则 Object.assign 之后仍然是 undefined，后面读它的人会踩空。
+        // 这只补字段、不动任何交互逻辑。
+        this.cfg = Object.assign({}, DEFAULT_CFG);
         const raw = localStorage.getItem(LS_KEY);
-        if (raw) Object.assign(this.cfg, JSON.parse(raw));
+        let hasSavedResMul = false;
+        if (raw) {
+          const saved = JSON.parse(raw);
+          // ★ 必须在合并默认值**之前**记下来：用户到底有没有显式存过 resMul。
+          //   合并之后这个信息就没了（默认值会把它补成 1.5）。
+          hasSavedResMul = Object.prototype.hasOwnProperty.call(saved, 'resMul');
+          Object.assign(this.cfg, saved);
+        }
         // 旧配置迁移：drag / wheelZoom 现在合并成 gestures；voice 合并进 sound
         if (this.cfg.gestures === undefined) {
           this.cfg.gestures = !(this.cfg.drag === false && this.cfg.wheelZoom === false);
@@ -705,11 +778,25 @@
         if (this.cfg.entryLogin === undefined) this.cfg.entryLogin = true;
         if (this.cfg.fastLoad === undefined) this.cfg.fastLoad = true;
         // v1.24：「渲染」滑杆以前没接线，值多为默认 1；现在它真的控制渲染分辨率了，
-        // 把这类默认值迁到官方基线 1.5，免得升级后画面反而变糊（用户手动调过的值不动）。
-        if (this.cfg.cfgV !== 3) {
-          if (this.cfg.resMul === 1 || this.cfg.resMul === undefined) this.cfg.resMul = 1.5;
-          this.cfg.cfgV = 3;
+        // 把这类默认值迁到官方基线 1.5，免得升级后画面反而变糊。
+        //
+        // ⚠️ v1.40 修（「渲染倍率没记忆」的真因）：
+        //   旧写法是 `if (cfgV !== 3)`，而块内部才把 cfgV 设成 3 —— 一旦配置里的
+        //   cfgV 已经是别的值（或旧配置根本没有 cfgV 字段），这个条件会**每次刷新
+        //   都成立**，于是每加载一次就把 resMul 检查并重置一遍：
+        //   用户把滑杆拖到 1.00×、刷新 → resMul===1 命中 → 被强改回 1.5。
+        //   表现就是「有些值记得住、1.00 记不住」，看起来像随机没记忆。
+        //
+        //   现在的规则：
+        //   · 用户**显式存过** resMul（hasSavedResMul）→ 一律尊重，永不覆盖；
+        //   · 从没存过（老配置 / 全新用户）→ 补官方基线 1.5 一次；
+        //   · resMulV 哨兵保证这段只跑一次，之后彻底不再进入。
+        //   只碰配置字段，不动任何交互路径。
+        if (this.cfg.resMulV !== 1) {
+          if (!hasSavedResMul) this.cfg.resMul = 1.5;
+          this.cfg.resMulV = 1;
         }
+        if (this.cfg.cfgV === undefined) this.cfg.cfgV = 3;
         if (this.cfg.blink === undefined) this.cfg.blink = true;
       } catch (e) { /* ignore */ }
       return this.cfg;
@@ -1097,6 +1184,9 @@
         self.mods = { PIXI: PIXI.t, WikiModelViewer: mr.WikiModelViewer };
         self.ready = true;
         log('官方引擎就绪：PIXI v' + ((PIXI.t && PIXI.t.VERSION) || '?') + '，WikiModelViewer 已加载');
+        // ★ 此刻官方 chunk 已执行完：window.PIXI 就是它挂的（实测 7.4.3）。
+        //   万一它哪天不再提供，这里会回退去外挂加载，不至于整条链路报废。
+        try { await ensureLibsFallback(); } catch (e) { log('回退加载依赖失败（继续用官方的）：' + (e && e.message)); }
         return self.mods;
       })();
       return this.promise;
@@ -1171,7 +1261,7 @@
     _bridgeCapture: false,   // 官方是否已 setPointerCapture
     _drag: null,             // 拖动中的起点快照
     _pendingDrag: null,      // 按下命中区后的「待定拖动」：位移超阈值再决定 touch 还是 drag
-    _offBase: null,          // 官方 fit 出来的基准变换（scale/position），用户变换在此之上叠加
+    _offBase: null,          // 取景基准 {sc,x,y,w,h,mw,mh}，由模型固有尺寸公式化算出（v1.38）
     _idleMotionIndex: 0,     // 当前待机序号（面板/还原时要用）
     idleTimer: null,         // 空闲自动动作定时器（官方模式）
     _selfMotion: false,      // 我们自己主动播动作的窗口期（用于区分「互动触发」，见 onOfficialAction）
@@ -1718,8 +1808,8 @@
       try { if (viewer.captureDefaults) viewer.captureDefaults(this.model); } catch (e) { log('captureDefaults 失败：' + e.message); }
       try { if (viewer.setupLive2DHitAreas) viewer.setupLive2DHitAreas(this.model); } catch (e) { log('setupLive2DHitAreas 失败：' + e.message); }
       try { if (viewer.bindLive2DHitAreas) viewer.bindLive2DHitAreas(this.model); } catch (e) { log('bindLive2DHitAreas 失败：' + e.message); }
-      // 官方已完成 fitDisplayObject（默认取景）→ 此刻的 scale/position 就是基准。
-      // 之后用户的缩放/位移都在这套基准上叠加，且打 __userTransform 防止官方再覆盖。
+      // 官方已完成 fitDisplayObject（默认取景）。v1.38 起基准完全公式化计算，
+      // 这里只是把「模型已就绪」这个时机通知一下（值本身与时机无关）。
       this._offBase = null;
       this.captureOfficialBase();
       try {
@@ -1767,6 +1857,8 @@
       this.startIdleLoop();   // 空闲自动动作（官方模式）
       // 载入瞬间容器可能还没量到真实尺寸（见 layoutOfficial 注释）——
       // 等宿主布局稳定后补一次，确保取景/命中区与屏幕一致。
+      // v1.36：layoutOfficial 内部有「尺寸变了就重取基准」的守卫，
+      //   所以这一次补布局会把基准校正到最终容器尺寸上，位置与大小就稳了。
       const self = this;
       setTimeout(function () {
         try { self.layout(); } catch (e) {}
@@ -1824,6 +1916,15 @@
 
       // 基准：官方自己 fit 出来的 scale 与居中位置。首次 layout 时捕获。
       // 注意 `__userTransform` 会让官方不再自动 fit，所以基准要在打标记**之前**取。
+      //
+      // ⚠️ v1.37：基准改由 captureOfficialBase() 用**模型固有尺寸 + 容器尺寸**
+      //   公式化算出（见那个函数的注释）。这里只需在「还没有基准」或
+      //   「容器尺寸变了」时重算一次 —— 重算结果只由这两个稳定量决定，
+      //   所以无论什么时候算，值都一样，不会再有刷新前后不一致的问题。
+      const needBase = !this._offBase || !this._offBase.sc ||
+        this._offBase.w !== cw || this._offBase.h !== ch;
+      if (needBase) this.captureOfficialBase();
+
       const b = this._offBase;
       const baseSc = (b && b.sc) || Math.abs(m.scale.x) || 1;
       const baseX = b ? b.x : m.position.x;
@@ -1915,15 +2016,96 @@
       return { w: Math.max(1, this.size.w || 1), h: Math.max(1, this.size.h || 1) };
     },
 
-    /** 记录官方 fit 出的基准变换（缩放/位移以此为 0 点） */
+    /**
+     * 记录「取景基准」（缩放/位移以此为 0 点）。
+     *
+     * ⚠️ v1.38 重要修正 —— 完全不依赖任何运行时状态，也不用标定系数。
+     *
+     * 报的问题：同一套 posX/posY/zoom，刷新前后摆的位置和大小都不一样。
+     * 用户提供的两份 DOM 快照给出决定性证据（容器两次完全相同
+     * 724.267×732.267，主画布也完全相同 1358×1373），**只有模型的 fit 结果不同**：
+     *   刷新前 model-native-save-canvas = 565.509×732.000   → 高/宽 = 1.294（竖长条）
+     *   刷新后 model-native-save-canvas = 712.278×683.147   → 高/宽 = 0.959（近正方）
+     * 同一个容器、同一个模型，官方 fit 出的外接框却是两个完全不同的形状。
+     *
+     * 原因：官方 `fitDisplayObject()` 按**模型当前的实际边界**缩放，而它被调用的
+     *   时机不固定 —— `viewer.load()` 内部一有机会就 fit 一次，之后动作（login/
+     *   待机）、呼吸、命中区初始化都可能再触发。我们在 load() 返回后立刻取值，
+     *   那一刻模型停在哪一帧**是随机的**，所以「基准」本身就带随机性。
+     *   v1.36 的「容器尺寸变了才重捕获」守卫没用 —— 容器尺寸压根没变。
+     *
+     * 修正思路：基准**只用模型的固有属性**算，一个运行时数字都不取。
+     *   `internalModel.originalWidth/Height` 是模型文件里写死的，任何时候都一样。
+     *   官方「把模型装进容器」的本质就是：
+     *       scale = min(容器宽 / 模型宽, 容器高 / 模型高)
+     *       position = 容器中心
+     *   直接按这个公式算基准，结果只由「模型固有尺寸 + 容器尺寸」决定，
+     *   与加载时机彻底无关 —— 任何时刻算都是同一个值。
+     *
+     * ⚠️ v1.37 曾经想标定一个「口径系数 k = 官方 scale / 公式 scale」，
+     *   但那是错的：取值时模型身上已经叠着**用户自己的 zoom**，k 里混进了
+     *   用户缩放因子 → k 随用户拖动而变 → 基准跟着变，位置反而更乱。
+     *   现在直接令 k = 1，完全走公式，不再做任何标定。
+     */
     captureOfficialBase() {
       const m = this.model;
       if (!m) return;
       try {
-        this._offBase = { sc: Math.abs(m.scale.x) || 1, x: m.position.x, y: m.position.y };
-        log('官方基准变换：scale=' + this._offBase.sc.toFixed(4) +
-            ' pos=(' + this._offBase.x.toFixed(1) + ',' + this._offBase.y.toFixed(1) + ')');
-      } catch (e) { this._offBase = null; }
+        const el = (this.official && this.official.viewer && this.official.viewer.container) || this.container;
+        const r = el && el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+        const cw = r && r.width > 1 ? Math.round(r.width) : Math.max(1, this.size.w || 1);
+        const ch = r && r.height > 1 ? Math.round(r.height) : Math.max(1, this.size.h || 1);
+
+        const im = m.internalModel;
+        const mw = (im && im.originalWidth) || m.width || 1;
+        const mh = (im && im.originalHeight) || m.height || 1;
+
+        // ── 基准缩放：纯公式，只用模型固有尺寸 + 容器尺寸 ──
+        // 这两个量都是稳定值，所以算出来的 scale 恒定，不受加载时机影响。
+        // ⚠️ 不再参考官方当时的 fit 值：那是按模型**当前姿态的外接框**算的，
+        //   而外接框长宽比会随动作/呼吸变化（实测同一容器下出现过 1.294 和
+        //   0.959 两种形状），导致官方 scale 在「按高度铺满」和「按宽度铺满」
+        //   之间来回跳 —— 这正是用户报的「每次加载大小都不一样」。
+        const fitSc = Math.min(cw / mw, ch / mh);
+
+        // ── 基准位置（v1.38 二次修正）──
+        // 之前硬编码成「容器中心」，但**官方 fit 并不总是把模型摆正中**：
+        // 用户实测 posX=72（本应偏右）时模型却「偏向屏幕左边」，
+        // 说明官方的基准位置比容器中心更靠左。
+        //
+        // 正确做法：把「锚点在官方坐标系里的落点」算出来，而不是猜。
+        //   模型本体中心 = 锚点位置 + (0.5 - anchor) × 模型显示尺寸
+        // 我们让「模型本体中心」落在容器中心，反推出锚点该在哪：
+        //   anchorPos = 容器中心 - (0.5 - anchor) × 显示尺寸
+        // 这样 posX=50 时模型才真的居中，posX=72 才真的偏右。
+        let anchorX = 0.5, anchorY = 0.5;
+        try {
+          if (m.anchor) {
+            const ax = Number(m.anchor.x), ay = Number(m.anchor.y);
+            if (isFinite(ax)) anchorX = ax;
+            if (isFinite(ay)) anchorY = ay;
+          }
+        } catch (e) {}
+
+        const dispW = mw * fitSc;     // 模型在当前基准 scale 下的显示尺寸
+        const dispH = mh * fitSc;
+        const baseX = cw / 2 - (0.5 - anchorX) * dispW;
+        const baseY = ch / 2 - (0.5 - anchorY) * dispH;
+
+        this._offBase = {
+          sc: fitSc,
+          x: baseX,
+          y: baseY,
+          w: cw, h: ch,           // 记录容器尺寸，供排查
+          mw: mw, mh: mh,         // 记录模型固有尺寸，供排查
+          anchor: { x: anchorX, y: anchorY },
+          disp: { w: dispW, h: dispH },
+        };
+        log('取景基准（公式化）：scale=' + fitSc.toFixed(6) +
+            '（模型 ' + mw + '×' + mh + '，容器 ' + cw + '×' + ch +
+            '，锚点 ' + anchorX + ',' + anchorY + '）' +
+            ' 基准位置=(' + baseX.toFixed(1) + ',' + baseY.toFixed(1) + ')');
+      } catch (e) { log('取景基准计算失败：' + (e && e.message)); this._offBase = null; }
     },
 
     /* ---------- 载入 / 切换模型（只有官方运行时一条路） ---------- */
@@ -2455,6 +2637,111 @@
         待机索引: v && v.live2dOfficialIdleIndex,
       };
     };
+    /**
+     * 取景自检（v1.37）——对比「刷新前后位置/大小不一样」时用。
+     * 在控制台执行 `fnosLive2D.probe()` 会打印一份关键数据，
+     * 里面能看到模型**固有尺寸**、当前 fit 结果、容器尺寸各是多少。
+     * 这些值在两次刷新之间应该只有「当前 fit 结果」会变，其余都必须一致。
+     */
+    window.fnosLive2D.probe = function () {
+      const m = Engine.model;
+      const v = Engine.official && Engine.official.viewer;
+      const el = (v && v.container) || Engine.container;
+      const r = el && el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+      const im = m && m.internalModel;
+      const cv = Engine.canvas;
+
+      // 模型当前的实际外接框（世界坐标）—— 这是「模型看起来在哪、多大」的权威值
+      let bounds = null;
+      try {
+        if (m && typeof m.getBounds === 'function') {
+          const b = m.getBounds();
+          bounds = { x: +b.x.toFixed(3), y: +b.y.toFixed(3),
+                     w: +b.width.toFixed(3), h: +b.height.toFixed(3) };
+        }
+      } catch (e) { bounds = '取不到：' + e.message; }
+
+      // ★ 最有用的一个量：模型落在**屏幕**上的实际像素矩形（v1.38）
+      //   getBounds 给的是容器/世界坐标，叠上画布在页面里的位置才是用户眼睛看到的。
+      //   想知道「是不是偏左」，直接看这个矩形的中心 x 在视口宽的百分之多少即可。
+      let screenRect = null;
+      try {
+        if (cv && bounds && typeof bounds.x === 'number') {
+          const cr = cv.getBoundingClientRect();
+          // 画布可能被缩放（CSS 尺寸 vs 逻辑尺寸）
+          const sx = cr.width / (cv.width / (window.devicePixelRatio || 1)) || 1;
+          const sy = cr.height / (cv.height / (window.devicePixelRatio || 1)) || 1;
+          const left = cr.left + bounds.x * sx;
+          const top = cr.top + bounds.y * sy;
+          const w = bounds.w * sx;
+          const h = bounds.h * sy;
+          screenRect = {
+            左上角像素: Math.round(left) + ',' + Math.round(top),
+            尺寸像素: Math.round(w) + 'x' + Math.round(h),
+            中心占视口百分比: Math.round(((left + w / 2) / (window.innerWidth || 1)) * 100) + '% x ' +
+                              Math.round(((top + h / 2) / (window.innerHeight || 1)) * 100) + '%',
+          };
+        }
+      } catch (e) { screenRect = '算不出：' + e.message; }
+
+      // 官方的辅助画布（反映它 fit 出的结果）
+      let saveCanvas = null;
+      try {
+        const sc = el && el.querySelector ? el.querySelector('.model-native-save-canvas') : null;
+        if (sc) saveCanvas = {
+          left: sc.style.left, top: sc.style.top,
+          width: sc.style.width, height: sc.style.height,
+          attr: sc.width + 'x' + sc.height,
+        };
+      } catch (e) {}
+
+      const out = {
+        _说明: '取景快照 —— 刷新前后各跑一次，两份一起发我',
+        时间: new Date().toLocaleString(),
+        脚本版本: VERSION,
+        视口: { w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio },
+        容器: r ? { w: +r.width.toFixed(3), h: +r.height.toFixed(3),
+                    left: +r.left.toFixed(2), top: +r.top.toFixed(2) } : null,
+        模型固有尺寸: im ? { w: im.originalWidth, h: im.originalHeight } : null,
+        模型锚点: m && m.anchor ? { x: m.anchor.x, y: m.anchor.y } : null,
+        模型屏幕矩形: screenRect,
+        当前fit结果: m ? {
+          scale: { x: +m.scale.x.toFixed(6), y: +m.scale.y.toFixed(6) },
+          position: { x: +m.position.x.toFixed(3), y: +m.position.y.toFixed(3) },
+          anchor: m.anchor ? { x: m.anchor.x, y: m.anchor.y } : null,
+          width: m.width, height: m.height,
+        } : null,
+        模型外接框: bounds,
+        主画布: cv ? {
+          attr: cv.width + 'x' + cv.height,
+          css: cv.style.width + ' x ' + cv.style.height,
+          rect: (() => { const b = cv.getBoundingClientRect();
+            return { w: +b.width.toFixed(2), h: +b.height.toFixed(2),
+                     left: +b.left.toFixed(2), top: +b.top.toFixed(2) }; })(),
+        } : null,
+        官方辅助画布: saveCanvas,
+        Engine基准_offBase: Engine._offBase,
+        Engine的size字段: Engine.size,
+        Engine的nat字段: Engine.nat,
+        用户变换标记: m ? !!m.__userTransform : null,
+        配置: {
+          zoom: Store.cfg.zoom, posX: Store.cfg.posX, posY: Store.cfg.posY,
+          resMul: Store.cfg.resMul, modelUrl: Store.cfg.modelUrl,
+        },
+      };
+
+      // ① 直接打印
+      console.log('%c[Live2D 取景自检]', 'color:#0af;font-weight:bold;font-size:14px');
+      console.log(JSON.stringify(out, null, 1));
+      // ② 复制到剪贴板（Chrome/Edge 支持 copy()）
+      try {
+        copy(JSON.stringify(out, null, 1));
+        console.log('%c✓ 已复制到剪贴板 —— 直接粘贴发我即可', 'color:#0a0;font-weight:bold');
+      } catch (e) {
+        console.log('%c（剪贴板不可用，请手动复制上面的 JSON）', 'color:#a80');
+      }
+      return out;
+    };
   } catch (e) {}
 
   /**
@@ -2481,10 +2768,53 @@
    * 这不是脚本坏了。
    */
   function applySoundSetting() {
+    const on = Store.cfg.sound === true;
+    // ① 外挂库的全局开关（只有走回退路径加载了 pixi-live2d-display 时才有意义）
     try {
       const l2d = window.PIXI && window.PIXI.live2d;
-      if (l2d && l2d.config) l2d.config.sound = Store.cfg.sound === true;
+      if (l2d && l2d.config) l2d.config.sound = on;
     } catch (e) { /* ignore */ }
+    // ② 真正管用的那层（本次改动）：官方运行时不挂 PIXI.live2d，它要放音频会走 window.Audio，
+    //    所以在这里装一个总闸 —— 关掉声音时把新建音频静音并挡住 play()。
+    installAudioMute(!on);
+  }
+
+  /**
+   * 音频总闸（本次改动）。
+   *
+   * 背景：以前"声音"开关只设了 pixi-live2d-display 的「PIXI.live2d.config.sound」，
+   * 而官方运行时不挂那个命名空间 → 那个开关其实管不到官方的音频。
+   * （实测碧蓝这批模型的动作音效 Motions[].Sound 本来就是空的，所以过去"看起来没坏"，
+   *   但语义上它并没真的管住官方可能播放的音频。）
+   *
+   * 做法：包装 window.Audio —— 关声音时把新建的音频静音 + volume=0，并在 play 时暂停。
+   * ⚠️ 故意**只包 window.Audio**，不动 HTMLMediaElement.prototype：
+   *    后者会影响宿主页面自己的音频，风险太大。
+   * 我们自己的台词语音走的也是 window.Audio，因此一并受管（它另外还自己判了一次 sound）。
+   */
+  let audioMuted = false;
+  let audioHookDone = false;
+  function installAudioMute(muted) {
+    audioMuted = !!muted;
+    if (audioHookDone) return;
+    if (typeof window.Audio !== 'function') return;
+    audioHookDone = true;
+    try {
+      const OrigAudio = window.Audio;
+      function GatedAudio() {
+        const a = new OrigAudio(...arguments);
+        try {
+          if (audioMuted) { a.muted = true; a.volume = 0; }
+          a.addEventListener('play', function () {
+            if (audioMuted) { try { a.pause(); a.currentTime = 0; } catch (e) {} }
+          });
+        } catch (e) {}
+        return a;
+      }
+      GatedAudio.prototype = OrigAudio.prototype;
+      window.Audio = GatedAudio;
+      log('已装音频总闸（关掉「声音」时会静音所有网页音频）');
+    } catch (e) { /* 包装失败不影响主流程 */ }
   }
 
   /* ============================================================ *
@@ -3019,6 +3349,10 @@
           Store.cfg.resMul = parseFloat(resRange.value);
           resOut.textContent = (+Store.cfg.resMul).toFixed(2) + '×';
           Engine.applyRenderScale();
+          // v1.36：拖动过程中也把值写进 localStorage。以前只有 change（松手）才存，
+          //   中途刷新/切页就丢回旧值 —— 用户看到的就是「渲染倍率没记忆」。
+          //   纯存储动作，不触发任何布局，不影响手感。
+          Store.save();
         });
         resRange.addEventListener('change', () => Store.save());
       }
@@ -3674,15 +4008,7 @@
         <input type="text" class="host-input" placeholder="https://你的资源域名">
         <button class="btn-host">应用</button>
       </div>
-      <div class="hint">当前：<b class="host-now"></b><br>
-        脚本的远端资源（官方运行时 / 模型 / 台词库）都从这两个域取，改完会记住并重新加载。<br>
-        <b>更省事的办法</b>（不用改面板、也不用执行代码）—— 直接在引入地址后面带参数：<br>
-        <code>&lt;script src="…fnos-live2d.js?host=你的域名"&gt;&lt;/script&gt;</code><br>
-        <code>?host=</code> 换主域、<code>?static=</code> 换静态资源域，可简写 <code>?h=</code> / <code>?s=</code>；
-        域名<b>带不带协议都行</b>（不带自动补 https://）：<br>
-        <code>?host=你的域名</code> ／ <code>?host=http://你的域名</code> ／ <code>?host=//镜像域</code><br>
-        也可以在注入前先执行 <code>window.__FNOS_L2D_CFG = { host: 'https://你的镜像' }</code>，
-        或写成标签属性 <code>data-l2d-host="…"</code>。</div>
+      <div class="hint">当前：<b class="host-now"></b></div>
     </div>
 
     <div class="sec">
@@ -3821,7 +4147,8 @@
     perfStart();
     // ★ 没有指定资源域名 → 直接停在这里：不联网、不注入任何依赖、不挂载。
     if (!HOSTS.host) {
-      log('未指定资源域名 —— 已暂停加载，未发出任何网络请求');
+      // 这一条是错误路径 —— 保持只打一行摘要，详细三种指定方式进缓冲
+      errlog('未指定资源域名 —— 已暂停加载，未发出任何网络请求');
       log('指定方式（任选一种）：');
       log('  ① 引入地址加参数：?host=你的域名');
       log('  ② 注入前先设：window.__FNOS_L2D_CFG = { host: "https://你的域名" }');
@@ -3859,13 +4186,20 @@
         '（脚本文件本身已执行，问题在 CDN 网络）', true);
       return;
     }
-    if (!window.PIXI || !window.PIXI.live2d || !window.PIXI.live2d.Live2DModel) {
-      errlog('pixi-live2d-display 未就绪，放弃注入');
+    // 本次改动：这里只检查 Core —— **不能检查 PIXI**：
+    //   PIXI 现在由官方运行时 chunk 提供，而 chunk 要等下面 initRenderer 才 import，
+    //   在此处检查必然为假，会直接把流程掐掉（踩过：日志出现「PIXI 未就绪，放弃注入」）。
+    //   PIXI 的兜底检查放在 SuStack.load() 之后（见 ensureLibsFallback）。
+    if (!window.Live2DCubismCore) {
+      errlog('Cubism Core 未就绪，放弃注入');
       bootHint('Live2D 库未就绪，已放弃注入（详见控制台）', true);
       return;
     }
     perfMark('libs');
     bootHint('Live2D：依赖就绪，正在查找壁纸节点…');
+    // 启动时就把声音设置应用一遍：音频总闸只在 UI.applyConfig() 里装，
+    // 而那是面板交互才走的路径 —— 不在这里补一次，开机就不会装（踩过）。
+    applySoundSetting();
     UI.mount();
     watchWallpaper();
     log('已就绪，等待壁纸元素出现…');
@@ -3880,7 +4214,7 @@
         地址: location.href,
         PIXI: !!window.PIXI,
         CubismCore: !!window.Live2DCubismCore,
-        Live2DModel: !!(window.PIXI && window.PIXI.live2d && window.PIXI.live2d.Live2DModel),
+        渲染层: (window.PIXI && window.PIXI.live2d) ? '外挂库' : '官方运行时自带（正常）',
         画布在文档中: !!(Engine.canvas && Engine.canvas.isConnected),
         找到的壁纸节点: (function () {
           const i = findWallpaperImg();
@@ -3892,6 +4226,23 @@
       };
       try { console.table(info); } catch (e) { console.log(info); }
       return info;
+    },
+
+    /**
+     * 日志全量开关（v1.40）：默认控制台只打 ≤10 行关键信息。
+     * 想在控制台看全部日志：fnosLive2D.verbose(true) 后刷新，
+     * 或直接在地址后加 ?l2dlog=1。
+     */
+    verbose(on) {
+      try { window.__FNOS_L2D_VERBOSE = on !== false; } catch (e) {}
+      console.log('[Live2D] 详细日志已' + (window.__FNOS_L2D_VERBOSE ? '开启' : '关闭') + ' —— 刷新页面后生效');
+      return window.__FNOS_L2D_VERBOSE;
+    },
+
+    /** 一条命令拿到全部日志（默认控制台只打关键行的完整版） */
+    allLogs() {
+      try { console.log(LOGS.join('\n')); } catch (e) {}
+      return LOGS;
     },
 
     /**
