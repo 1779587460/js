@@ -1,4 +1,23 @@
 /*!
+ * fnOS Live2D 壁纸 —— 自托管版（基于 v1.40.0）
+ */
+
+/* ============================================================
+ * ★★★ 自托管配置：上传到服务器后，只改下面这两行 ★★★
+ *   host       = 你的服务器地址（assets/、lib/、cn/ 都挂在它根下）
+ *   staticHost = 模型资源地址（azurlane/live2d/… 挂在它根下）
+ *   两者通常是同一个地址，都填你的服务器 URL 即可（结尾不要带 /）。
+ *   例：https://l2d.example.com  或  http://192.168.1.10:8080
+ * ============================================================ */
+window.__FNOS_L2D_CFG = {
+  host: 'https://your-server.example.com',
+  staticHost: 'https://your-server.example.com',
+};
+try {
+  localStorage.setItem('fnos-l2d:hosts', JSON.stringify(window.__FNOS_L2D_CFG));
+} catch (e) {}
+
+/*!
  * fnOS Live2D 壁纸 —— 普通引入版 v1.40.0
  *
  * 用法：不用油猴，直接在网页里引这个文件（放在 <head> 或 <body> 末尾都行）：
@@ -36,7 +55,7 @@
   if (window.__fnosL2DPlainLoaded) return;
   window.__fnosL2DPlainLoaded = true;
 
-  const VERSION = '1.40.0';
+  const VERSION = '1.41.0';
 
   /* ------------------------------------------------------------ *
    * 0. 探针：只要控制台出现下面这一行，就证明脚本确实被注入了。
@@ -130,6 +149,10 @@
     // ⚠️ 没有内置默认：不指定就什么都不加载（见 boot() 开头的检查）。
     // 这是刻意的 —— 免得在源码里留下默认域名，也免得用户以为"装了就会自动联网取素材"。
     const out = { host: '', staticHost: '', from: '' };
+    // ⓪ 的结果先存在这儿，等 ③②① 全部读完再统一应用（见本函数末尾）。
+    //   原因：这四处都是「直接给 out 赋值」，等价于后者覆盖前者 ——
+    //   最先解析的 URL 参数反而最先被盖掉，和上面注释承诺的优先级正好相反。
+    let urlP = null;
 
     // ⓪ 脚本自己的 URL 查询参数（优先级最高）—— <script src="…?host=你的域名">
     //    三种方式找回「我自己的 URL」，按可靠性排序：
@@ -179,14 +202,7 @@
         if (rawHost || rawStatic) {
           const ho = normalizeOrigin(rawHost, u.protocol);
           const so = normalizeOrigin(rawStatic, u.protocol);
-          if (ho) {
-            out.host = ho;
-            out.staticHost = so || deriveStatic(ho);
-            out.from = '脚本 URL 参数';
-          } else if (so) {
-            out.staticHost = so;
-            out.from = '脚本 URL 参数';
-          }
+          if (ho || so) urlP = { host: ho, staticHost: so };
           out.src = selfUrl;
         }
       }
@@ -215,6 +231,29 @@
         else if (g.staticHost) { out.staticHost = norm(g.staticHost); out.from = 'window.__FNOS_L2D_CFG'; }
       }
     } catch (e) {}
+
+    // ⓪ 脚本自己的 URL 查询参数 —— 真正最高优先级，所以必须放到最后写。
+    //    ⚠️ v1.41 修复：这段解析代码本来放在函数最前面，但后面 ③②① 三个来源都是
+    //    「直接赋值」，把先解析的结果覆盖掉了 —— 于是注释承诺的「URL 参数最高」
+    //    在实现上变成了「window.__FNOS_L2D_CFG 最高」。自托管版头部又硬编码了一份
+    //    __FNOS_L2D_CFG（占位域名），结果 ?host= / ?static= 参数**完全失效**。
+    //    现在改到这里应用，优先级与注释一致：
+    //      URL 参数 > __FNOS_L2D_CFG > <script data-l2d-host> > localStorage > 内置默认
+    if (urlP) {
+      if (urlP.host) {
+        out.host = urlP.host;
+        // 没给 ?static= 就**直接用 ?host= 的同一个地址**。
+        //   不在这里做 'static.' 前缀推导 —— 那是为 l2d.su 那套（l2d.su / static.l2d.su）
+        //   写的，套到自建服务器上会拼出 static.你的域名 这种压根不存在的域。
+        //   自托管时资源本来就都在自己这一台机器上，文件头部的说明也是这么写的：
+        //   「两者通常是同一个地址，都填你的服务器 URL 即可」。
+        out.staticHost = urlP.staticHost || urlP.host;
+      } else {
+        // 只给了 ?static=：host 保持前置来源（最终回落到文件自带的 __FNOS_L2D_CFG）
+        out.staticHost = urlP.staticHost;
+      }
+      out.from = '脚本 URL 参数';
+    }
 
     // 只给了静态域？试着反推主域（static.x → x）。
     // 反推不出来就留空 —— 由 boot() 拒绝加载，别猜一个错的域名去联网。
@@ -262,8 +301,9 @@
       // ⚠️ 为什么**不用 npmmirror**（v1.34 实测）：镜像上的 live2dcubismcore 最新只到
       //    **1.0.2**（Cubism 4 时代），而本脚本要 **Cubism 5.1.0** —— 旧版 Core 打开
       //    moc3 v5 模型会直接报错，不是"降级能用"。所以这一条不给它高优先级，也不加它。
-      'https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js',
+      // 自托管版：本地镜像放第一位（原顺序里 cubism.live2d.com 在国内不可达会白等超时）
       SU_HOST + '/lib/live2dcubismcore.min.js?v=5.1.0',
+      'https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js',
       // 最后这条同样是 1.0.2，仅在"官方与资源站都不可达"时作最坏兜底（老模型还能用）
       'https://fastly.jsdelivr.net/npm/live2dcubismcore@1.0.2/live2dcubismcore.min.js',
     ],
@@ -304,7 +344,101 @@
     fabRight: 18,
     fabBottom: 18,
     panelOpen: false,
+    // v1.41：外观（面板 / 控制栏 / 悬浮球共用），由「外观」区调节。
+    //   暗色与亮色各记一份颜色，切换模式时色盘跟着换成那一份。
+    uiOpacity: 1,               // 整体不透明度（0.2 ~ 1）
+    uiPrimaryDark: '#1b1e26',   // 主色 = 背景（暗色模式）
+    uiAccentDark: '#6c8cff',    // 副色 = 高亮（暗色模式）
+    uiPrimaryLight: '#f5f6fa',  // 主色（亮色模式）
+    uiAccentLight: '#4f6ef2',   // 副色（亮色模式）
+    uiLight: false,             // false = 暗色，true = 亮色
   };
+
+  /* ------------------------------------------------------------ *
+   * 外观（v1.41）
+   *
+   * 只开放两个颜色给用户：
+   *   · 主色 primary —— 面板 / 控制栏 / 悬浮球的**背景**
+   *   · 副色 accent  —— 按钮、开关、滑杆、选中态的**高亮色**
+   *
+   * 文字、边框、按钮表面这些**不**开放：它们按主色的明暗自动推导
+   * （主色够亮就配深文字，够暗就配浅文字）。否则用户挑一个亮主色再配浅文字，
+   * 界面会直接糊成一片 —— 与其等他踩坑，不如把对比度锁死。
+   *
+   * 暗色 / 亮色**各记一份**颜色值（cfg.uiPrimaryDark / uiPrimaryLight …），
+   * 切换模式时色盘跟着换成那一份，不会把对方的设置冲掉。
+   *
+   * 副色的各档透明度要在 JS 里现算 —— CSS 没法把 #rrggbb 拆成 rgba。
+   * ------------------------------------------------------------ */
+  const THEME_DARK = { primary: '#1b1e26', accent: '#6c8cff' };
+  const THEME_LIGHT = { primary: '#f5f6fa', accent: '#4f6ef2' };
+
+  /* 主色偏暗时用的中性色（浅色文字 + 白色半透明表面） */
+  const NEUTRAL_ON_DARK = {
+    '--ui-sunken': 'rgba(0,0,0,.16)',
+    '--ui-surface': 'rgba(255,255,255,.08)',
+    '--ui-surface-weak': 'rgba(255,255,255,.06)',
+    '--ui-surface-h': 'rgba(255,255,255,.16)',
+    '--ui-border': 'rgba(255,255,255,.14)',
+    '--ui-border-2': 'rgba(255,255,255,.09)',
+    '--ui-border-3': 'rgba(255,255,255,.18)',
+    '--ui-fg': '#e9ecf3',
+    '--ui-fg-2': '#c3cad8',
+    '--ui-fg-3': '#99a1b3',
+    '--ui-fg-4': '#6b7284',
+    '--ui-sheen': 'rgba(255,255,255,.05)',
+    '--ui-err-bg': 'rgba(255,90,90,.14)',
+    '--ui-err-fg': '#ffb3b3',
+    '--ui-err-bd': 'rgba(255,90,90,.35)',
+  };
+  /* 主色偏亮时用的中性色（深色文字 + 黑色半透明表面） */
+  const NEUTRAL_ON_LIGHT = {
+    '--ui-sunken': 'rgba(0,0,0,.035)',
+    '--ui-surface': 'rgba(0,0,0,.05)',
+    '--ui-surface-weak': 'rgba(0,0,0,.03)',
+    '--ui-surface-h': 'rgba(0,0,0,.10)',
+    '--ui-border': 'rgba(0,0,0,.15)',
+    '--ui-border-2': 'rgba(0,0,0,.09)',
+    '--ui-border-3': 'rgba(0,0,0,.20)',
+    '--ui-fg': '#1f2330',
+    '--ui-fg-2': '#4a5164',
+    '--ui-fg-3': '#6b7284',
+    '--ui-fg-4': '#9aa1b0',
+    '--ui-sheen': 'rgba(0,0,0,.02)',
+    '--ui-err-bg': 'rgba(220,60,60,.09)',
+    '--ui-err-fg': '#c0392b',
+    '--ui-err-bd': 'rgba(220,60,60,.28)',
+  };
+
+  const hasOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+  /** 只认 #rrggbb，认不出来就用默认值（色盘的 value 必须是这个格式） */
+  function pickHex(v, dft) {
+    const x = String(v == null ? '' : v).trim();
+    return /^#[0-9a-fA-F]{6}$/.test(x) ? x : dft;
+  }
+  function hexToRgb(hex) {
+    return [1, 3, 5].map((i) => parseInt(hex.substr(i, 2), 16));
+  }
+  /** 相对亮度（0~1）：判断这个底色该配深字还是浅字 */
+  function relLuminance(rgb) {
+    return (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]) / 255;
+  }
+  /** 整体加减明度，用来从主色派生「抬起来」的那层底色 */
+  function shiftRgb(rgb, d) {
+    return rgb.map((v) => Math.max(0, Math.min(255, Math.round(v + d))));
+  }
+  function mixHex(hex, k) {
+    const c = hexToRgb(hex);
+    const to = k > 0 ? 255 : 0;
+    return '#' + c.map((v) => Math.round(v + (to - v) * Math.abs(k)).toString(16).padStart(2, '0')).join('');
+  }
+  /** 主题色的透明度档位（= CSS 里用到的全部档位，逐个算好再写进变量） */
+  const UI_ALPHA = [
+    ['--ui-a10', 0.10], ['--ui-a14', 0.14], ['--ui-a18', 0.18], ['--ui-a20', 0.20],
+    ['--ui-a25', 0.25], ['--ui-a28', 0.28], ['--ui-a30', 0.30], ['--ui-a34', 0.34],
+    ['--ui-a35', 0.35], ['--ui-a45', 0.45], ['--ui-a50', 0.50], ['--ui-a55', 0.55],
+    ['--ui-a60', 0.60], ['--ui-a62', 0.62],
+  ];
 
   // 动作组的中文名（碧蓝航线模型的常见分组）
   const MOTION_LABEL = {
@@ -402,9 +536,45 @@
   function bootHintFade() {
     window.__fnosBootHintDone = true;   // 标记：此后普通提示不再显示
     const n = document.getElementById('fnos-l2d-boothint');
-    if (!n || n.__isError) return;
+    if (!n) return;
+    // ⚠️ v1.41 修复：以前这里是 `if (!n || n.__isError) return;` —— 错误提示被刻意
+    //   常驻（原意是方便截图反馈），结果「先载入失败、再换个模型成功」时，那条失败
+    //   提示会永远钉在左下角，怎么都消不掉。现在只要走到成功路径就一并收掉，
+    //   完整信息在控制台日志里仍然查得到。
     n.style.opacity = '0';
     setTimeout(() => { if (n && n.parentNode) n.parentNode.removeChild(n); }, 600);
+  }
+
+  /**
+   * 屏幕中下方的一次性轻提示（v1.41）。
+   * 用于「已隐藏，按 Alt+L 呼出」这类告知 —— 比控制台日志直观，且不挡操作。
+   */
+  function showToast(text, ms) {
+    try {
+      let n = document.getElementById('fnos-l2d-toast');
+      if (!n) {
+        n = document.createElement('div');
+        n.id = 'fnos-l2d-toast';
+        n.style.cssText =
+          'position:fixed;left:50%;bottom:64px;transform:translateX(-50%);z-index:2147483001;' +
+          'padding:9px 16px;border-radius:10px;max-width:80vw;text-align:center;' +
+          'font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;' +
+          'background:rgba(20,22,30,.94);color:#e9edf6;border:1px solid rgba(255,255,255,.16);' +
+          'box-shadow:0 10px 30px rgba(0,0,0,.45);pointer-events:none;' +
+          'opacity:0;transition:opacity .25s;';
+        (document.body || document.documentElement).appendChild(n);
+      }
+      n.textContent = text;
+      n.style.opacity = '1';
+      if (n.__t) clearTimeout(n.__t);
+      n.__t = setTimeout(function () {
+        n.style.opacity = '0';
+        setTimeout(function () {
+          if (n && n.parentNode && n.style.opacity === '0') n.parentNode.removeChild(n);
+        }, 400);
+      }, ms || 3200);
+      return n;
+    } catch (e) { return null; }
   }
 
   /* ------------------------------------------------------------ *
@@ -875,8 +1045,8 @@
   // （哈希变），失效后请求会命中 SPA 回落 → 返回 HTML → import 报 Unexpected token '<'，
   // 所以正常路径必须走下面的 resolveSuChunks()。
   const SU_CHUNKS_FALLBACK = [
-    'index-LGceUR3e.js', 'lib-BYypsEmk.js', 'resourceProgress-CyQ66jqg.js',
-    'live2dRuntime-CzMa3YhQ.js', 'spineRuntime-CwB63JJC.js', 'modelRuntime-BDk3g7Pb.js',
+    'index-D6ul2HTO.js', 'lib-Cxe-RIgD.js', 'resourceProgress-BGwm6Ztp.js',
+    'live2dRuntime-BGh9s8g0.js', 'spineRuntime-BlJRC2Ja.js', 'modelRuntime-BEr1Iv_8.js',
   ];
 
   /** 从一段 JS 里扫出所有 xxx-HASH.js 形式的 chunk 名 */
@@ -3236,6 +3406,9 @@
       this.setModelName(Store.cfg.modelLabel || '');
       this.setOpen(!!Store.cfg.panelOpen);
       this.syncControls();
+      this.installPanelDrag();   // v1.41：标题栏可拖动
+      this.syncUiLook();         // v1.41：回填外观控件
+      this.applyUiTheme();       // v1.41：把外观应用到面板 + 控制栏
     },
 
     applyFabPosition() {
@@ -3389,6 +3562,39 @@
       bindSwitch('.s-sound', 'sound', () => { applySoundSetting(); if (!Store.cfg.sound) Engine.stopVoice(); });
       bindSwitch('.s-voicemotion', 'voiceMotion');
 
+      // 外观（v1.41）：不透明度 / 主题色 / 亮暗预设 —— 改完立刻生效，松手才落盘
+      const opRange = q('.ui-opacity');
+      if (opRange) {
+        const opOut = opRange.parentElement.querySelector('b');
+        opRange.addEventListener('input', () => {
+          Store.cfg.uiOpacity = parseFloat(opRange.value);
+          opOut.textContent = Math.round(Store.cfg.uiOpacity * 100) + '%';
+          this.applyUiTheme();
+        });
+        opRange.addEventListener('change', () => Store.save());
+      }
+      // 两个色盘：主色写进「当前模式」那一份，不会动到另一个模式的设置
+      const bindTint = (sel, keyDark, keyLight) => {
+        const el = q(sel);
+        if (!el) return;
+        el.addEventListener('input', () => {
+          Store.cfg[Store.cfg.uiLight === true ? keyLight : keyDark] = el.value;
+          this.applyUiTheme();
+        });
+        el.addEventListener('change', () => Store.save());
+      };
+      bindTint('.ui-color-main', 'uiPrimaryDark', 'uiPrimaryLight');
+      bindTint('.ui-color-accent', 'uiAccentDark', 'uiAccentLight');
+
+      qa('[data-theme]').forEach((b) => {
+        b.addEventListener('click', () => {
+          Store.cfg.uiLight = b.getAttribute('data-theme') === 'light';
+          Store.save();
+          this.syncUiLook();      // 色盘切到该模式那一份
+          this.applyUiTheme();
+        });
+      });
+
       // 资源域名：改完存 localStorage 并重载（域名变了，之前的资源缓存也用不上了）
       const hostInput = q('.host-input');
       const hostNow = q('.host-now');
@@ -3446,6 +3652,8 @@
         Store.reset();
         this.syncSliders();
         this.syncSwitches();
+        this.syncUiLook();        // v1.41：外观也一并回到默认
+        this.applyUiTheme();
         Engine.applyConfig();
         Engine.load(Store.cfg.modelUrl, Store.cfg.modelLabel);
       });
@@ -3479,13 +3687,17 @@
         } catch (e) { location.reload(); }
       });
       q('.btn-hide-fab').addEventListener('click', () => {
-        // 控制栏模式下这个按钮叫「隐藏按钮」，语义就是「把右下角这坨收掉」——
-        // 所以顺手关掉控制栏，否则悬浮球虽然藏了、控制栏还杵在那里。
-        if (Store.cfg.bar !== false) Store.cfg.bar = false;
-        Store.cfg.fabHidden = true; Store.save();
+        // ⚠️ v1.41 修复：以前这里会顺手 `Store.cfg.bar = false` —— 于是「简易控制栏」
+        //   这个**偏好设置**被永久改掉：按 Alt+L 再呼出时，面板里那一项已经变成没勾选，
+        //   用户看到的就是「点了隐藏按钮，简易控制栏的选项被自动关掉」。
+        //   现在只落一个「用户主动隐藏」标记，不碰任何偏好；控制栏与悬浮球一起收掉，
+        //   下次 Alt+L / 点悬浮球都会把它清掉，控制栏以原样回来。
+        Store.cfg.fabHidden = true;
+        Store.save();
         this.setOpen(false);
         this.syncControls();
         this.syncSwitches();
+        showToast('已隐藏 —— 按 Alt+L 可随时呼出控制栏');
       });
 
       // 快捷键 Alt+L 展开/收起，Alt+H 显示/隐藏模型
@@ -3595,13 +3807,15 @@
         settings: '<path d="M12 3c3.9 0 7 2.8 7 6.3 0 1.1-.3 2.1-.8 3 .6.5 1.1 1 1.4 1.7.5 1 .3 1.9-.5 2.5-.6.4-1.3.4-2 .1-.6-.2-1.2-.7-1.7-1.3-.4-.4-1-.5-1.5-.3-1.1.6-2.3 1-3.6 1s-2.5-.4-3.6-1c-.5-.3-1.1-.1-1.5.3-.5.6-1.1 1.1-1.7 1.3-.7.3-1.4.3-2-.1-.8-.6-1-1.5-.5-2.5.3-.7.8-1.2 1.4-1.7-.5-.9-.8-1.9-.8-3C5 5.8 8.1 3 12 3zm-2.6 5.4a1.6 1.6 0 1 0 0 3.2 1.6 1.6 0 0 0 0-3.2zm5.2 0a1.6 1.6 0 1 0 0 3.2 1.6 1.6 0 0 0 0-3.2z"/>',
       };
       const BTNS = [
+        // v1.41：整条栏**只留一条**分隔线，放在「分区互动」组上方（也就是栏的顶端），
+        //   把控制栏和上方页面内容分开。原来夹在组与组之间的那两条去掉了 ——
+        //   三个组本来就靠图标区分，多出来的线反而显得碎。
+        { k: 'sep' },
         { k: 'zones', t: '分区互动：开 / 关', icon: 'zones' },
         { k: 'zoneshow', t: '显示触摸区域（把看不见的触摸部件画出来）', icon: 'target' },
         { k: 'zoneReset', t: '还原触摸区参数', icon: 'restore' },
-        { k: 'sep' },
         { k: 'sound', t: '声音：开 / 关', icon: 'voice' },
         { k: 'next', t: '念下一句台词', icon: 'text' },
-        { k: 'sep' },
         { k: 'gestures', t: '拖动与缩放：开 / 关', icon: 'drag' },
         { k: 'hide', t: '显示 / 隐藏模型', icon: 'eye' },
         { k: 'reset', t: '还原位置与缩放', icon: 'reset' },
@@ -3661,6 +3875,47 @@
       });
     },
 
+    /**
+     * 让设置面板的标题栏也能拖着走（v1.41）。
+     * 位置与悬浮球 / 控制栏共用 fabRight / fabBottom —— 三者本来就围绕右下角排布，
+     * 共用一套坐标，拖动任何一个，另外两个都会跟着走（applyFabPosition 一次摆三个）。
+     */
+    installPanelDrag() {
+      const panel = this.panel;
+      if (!panel || panel.__fnosDraggable) return;
+      panel.__fnosDraggable = true;
+      const hd = panel.querySelector('header');
+      if (!hd) return;
+      const UI = this;
+      hd.addEventListener('pointerdown', (e) => {
+        if (e.button !== 0) return;
+        // 标题栏右侧的收起按钮照常点击，不参与拖动
+        if (e.target && e.target.closest && e.target.closest('button')) return;
+        e.preventDefault();
+        const c = Store.cfg;
+        const sx = e.clientX, sy = e.clientY;
+        const ox = Number(c.fabRight) || 0, oy = Number(c.fabBottom) || 0;
+        let moved = false;
+        const move = (ev) => {
+          const r = Math.max(0, Math.min(window.innerWidth - 56, ox + (sx - ev.clientX)));
+          const b = Math.max(0, Math.min(window.innerHeight - 56, oy + (sy - ev.clientY)));
+          if (Math.abs(r - ox) + Math.abs(b - oy) > 2) moved = true;
+          c.fabRight = r;
+          c.fabBottom = b;
+          UI.applyFabPosition();
+        };
+        const up = () => {
+          window.removeEventListener('pointermove', move, true);
+          window.removeEventListener('pointerup', up, true);
+          window.removeEventListener('pointercancel', up, true);
+          if (moved) Store.save();
+        };
+        window.addEventListener('pointermove', move, true);
+        window.addEventListener('pointerup', up, true);
+        window.addEventListener('pointercancel', up, true);
+      });
+    },
+
     onBarClick(k) {
       const flip = (key) => {
         Store.cfg[key] = Store.cfg[key] === false;
@@ -3704,11 +3959,80 @@
      */
     syncControls() {
       const c = Store.cfg;
-      const barOn = c.bar !== false;
+      // v1.41：「用户主动隐藏」是一个临时状态，优先级高于「简易控制栏」这个偏好 ——
+      //   隐藏时两者一起收掉，但不修改 bar 本身，所以随时能原样恢复。
+      const hidden = c.fabHidden === true;
+      const barOn = !hidden && c.bar !== false;
       if (this.bar) this.bar.classList.toggle('show', barOn);
-      if (this.fab) this.fab.classList.toggle('hidden', barOn || c.fabHidden === true);
+      if (this.fab) this.fab.classList.toggle('hidden', barOn || hidden);
       this.applyFabPosition();
       this.syncBar();
+    },
+
+    /**
+     * 应用外观（v1.41）：主色刷背景、副色刷高亮，面板 / 控制栏 / 悬浮球一起变。
+     */
+    applyUiTheme() {
+      const c = Store.cfg;
+      const root = this.root;
+      if (!root) return;
+      const st = root.style;
+      const isLight = c.uiLight === true;
+
+      const dft = isLight ? THEME_LIGHT : THEME_DARK;
+      const primary = pickHex(isLight ? c.uiPrimaryLight : c.uiPrimaryDark, dft.primary);
+      const accent = pickHex(isLight ? c.uiAccentLight : c.uiAccentDark, dft.accent);
+
+      const p = hexToRgb(primary);
+      const rgb = p.join(',');
+      const onLight = relLuminance(p) > 0.58;   // 主色够亮 → 文字走深色
+
+      // ① 主色：面板 / 控制栏 / 悬浮球的背景（半透明，保留毛玻璃观感）
+      st.setProperty('--ui-solid', primary);
+      st.setProperty('--ui-bg', 'rgba(' + rgb + ',.94)');
+      st.setProperty('--ui-bg-bar', 'rgba(' + rgb + ',.88)');
+      st.setProperty('--ui-raised', 'rgba(' + shiftRgb(p, onLight ? -14 : 16).join(',') + ',.96)');
+
+      // ② 文字 / 边框 / 按钮表面：不开放，按主色明暗整组切换
+      const N = onLight ? NEUTRAL_ON_LIGHT : NEUTRAL_ON_DARK;
+      for (const k in N) if (hasOwn(N, k)) st.setProperty(k, N[k]);
+
+      // ③ 副色：本体 + 各档透明度（CSS 拆不了 hex，只能在这儿算好铺进去）
+      const a = hexToRgb(accent).join(',');
+      st.setProperty('--ui-accent', accent);
+      st.setProperty('--ui-accent-fg', mixHex(accent, onLight ? -0.45 : 0.42));
+      for (const pair of UI_ALPHA) st.setProperty(pair[0], 'rgba(' + a + ',' + pair[1] + ')');
+
+      // ④ 整体不透明度 —— 面板与控制栏同步；等于 1 时清掉内联样式，把控制权还给 CSS
+      const op = clamp(Number(c.uiOpacity) || 1, 0.2, 1);
+      const v = op >= 1 ? '' : String(op);
+      if (this.panel) this.panel.style.opacity = v;
+      if (this.bar) this.bar.style.opacity = v;
+    },
+
+    /** 把配置里的外观值回填到控件上（v1.41）。切亮暗时会再调一次，做「色盘同步」 */
+    syncUiLook() {
+      const c = Store.cfg;
+      const isLight = c.uiLight === true;
+      const dft = isLight ? THEME_LIGHT : THEME_DARK;
+
+      const range = this.shadow.querySelector('.ui-opacity');
+      if (range) {
+        const v = clamp(Number(c.uiOpacity) || 1, 0.2, 1);
+        range.value = v;
+        const out = range.parentElement.querySelector('b');
+        if (out) out.textContent = Math.round(v * 100) + '%';
+      }
+
+      // 两个色盘都显示**当前模式**那一份值
+      const cm = this.shadow.querySelector('.ui-color-main');
+      if (cm) cm.value = pickHex(isLight ? c.uiPrimaryLight : c.uiPrimaryDark, dft.primary);
+      const ca = this.shadow.querySelector('.ui-color-accent');
+      if (ca) ca.value = pickHex(isLight ? c.uiAccentLight : c.uiAccentDark, dft.accent);
+
+      Array.from(this.shadow.querySelectorAll('[data-theme]')).forEach((b) => {
+        b.classList.toggle('on', (b.getAttribute('data-theme') === 'light') === isLight);
+      });
     },
 
     renderMotions(groups) {
@@ -3777,6 +4101,44 @@
   const TEMPLATE = `
 <style>
   :host { all: initial; }
+  /* ---- 外观变量（v1.41）：面板与控制栏共用，改这几个值即可整体换肤 ---- */
+  :host {
+    --ui-bg: rgba(22,24,31,.92);
+    --ui-bg-bar: rgba(22,24,31,.86);
+    --ui-solid: #1b1e26;
+    --ui-raised: rgba(34,38,50,.94);
+    --ui-sunken: rgba(0,0,0,.16);
+    --ui-surface: rgba(255,255,255,.08);
+    --ui-surface-weak: rgba(255,255,255,.06);
+    --ui-surface-h: rgba(255,255,255,.16);
+    --ui-border: rgba(255,255,255,.14);
+    --ui-border-2: rgba(255,255,255,.09);
+    --ui-border-3: rgba(255,255,255,.18);
+    --ui-fg: #e9ecf3;
+    --ui-fg-2: #c3cad8;
+    --ui-fg-3: #99a1b3;
+    --ui-fg-4: #6b7284;
+    --ui-accent: #6c8cff;
+    --ui-accent-fg: #b9c8ff;
+    --ui-sheen: rgba(255,255,255,.05);       /* header 顶部那道高光 */
+    --ui-err-bg: rgba(255,90,90,.14);        /* 错误提示三件套（亮色下另行覆盖）*/
+    --ui-err-fg: #ffb3b3;
+    --ui-err-bd: rgba(255,90,90,.35);
+    --ui-a10: rgba(108,140,255,.1);
+    --ui-a14: rgba(108,140,255,.14);
+    --ui-a18: rgba(108,140,255,.18);
+    --ui-a20: rgba(108,140,255,.2);
+    --ui-a25: rgba(108,140,255,.25);
+    --ui-a28: rgba(108,140,255,.28);
+    --ui-a30: rgba(108,140,255,.3);
+    --ui-a34: rgba(108,140,255,.34);
+    --ui-a35: rgba(108,140,255,.35);
+    --ui-a50: rgba(108,140,255,.5);
+    --ui-a55: rgba(108,140,255,.55);
+    --ui-a62: rgba(108,140,255,.62);
+    --ui-a45: rgba(108,140,255,.45);
+    --ui-a60: rgba(108,140,255,.6);
+  }
   * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
       "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; }
 
@@ -3784,8 +4146,8 @@
   .fab {
     position: fixed; width: 42px; height: 42px; border-radius: 50%;
     display: flex; align-items: center; justify-content: center;
-    background: rgba(24,26,34,.82); backdrop-filter: blur(12px);
-    border: 1px solid rgba(255,255,255,.16);
+    background: var(--ui-bg-bar); backdrop-filter: blur(12px);
+    border: 1px solid var(--ui-surface-h);
     box-shadow: 0 6px 20px rgba(0,0,0,.35);
     cursor: grab; pointer-events: auto; user-select: none;
     /* 触摸/触控笔下必须禁掉默认手势，否则浏览器会把「拖动」当成滚动，
@@ -3794,7 +4156,7 @@
     transition: opacity .35s, transform .2s, background .2s;
     opacity: .55;
   }
-  .fab:hover { opacity: 1; background: rgba(34,38,50,.94); transform: scale(1.06); }
+  .fab:hover { opacity: 1; background: var(--ui-raised); transform: scale(1.06); }
   .fab:active { cursor: grabbing; }
   .fab.hidden { display: none; }
   .fab svg { width: 22px; height: 22px; display: block; }
@@ -3803,151 +4165,151 @@
   .panel {
     position: fixed; width: 286px; max-height: min(72vh, 620px);
     display: none; flex-direction: column;
-    background: rgba(22,24,31,.92); backdrop-filter: blur(18px);
-    border: 1px solid rgba(255,255,255,.13);
+    background: var(--ui-bg); backdrop-filter: blur(18px);
+    border: 1px solid var(--ui-border);
     border-radius: 14px; box-shadow: 0 18px 48px rgba(0,0,0,.5);
-    color: #e9ecf3; font-size: 12px;
+    color: var(--ui-fg); font-size: 12px;
     pointer-events: auto; overflow: hidden;
   }
   .panel.open { display: flex; }
 
   header {
     display: flex; align-items: center; gap: 8px;
-    padding: 11px 12px; border-bottom: 1px solid rgba(255,255,255,.09);
-    background: linear-gradient(180deg, rgba(255,255,255,.05), transparent);
+    padding: 11px 12px; border-bottom: 1px solid var(--ui-border-2);
+    background: linear-gradient(180deg, var(--ui-sheen), transparent);
   }
-  header .dot { width: 8px; height: 8px; border-radius: 50%; background: #6c8cff;
-    box-shadow: 0 0 8px #6c8cff; flex: none; }
+  header .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ui-accent);
+    box-shadow: 0 0 8px var(--ui-accent); flex: none; }
   header .t { font-weight: 600; font-size: 13px; letter-spacing: .3px; flex: 1; }
   .collapse {
     width: 22px; height: 22px; border: none; border-radius: 6px; cursor: pointer;
-    background: rgba(255,255,255,.08); color: #cfd5e2; font-size: 14px; line-height: 1;
+    background: var(--ui-surface); color: var(--ui-fg-2); font-size: 14px; line-height: 1;
   }
-  .collapse:hover { background: rgba(255,255,255,.16); color: #fff; }
+  .collapse:hover { background: var(--ui-surface-h); color: var(--ui-fg); }
 
   .body { overflow-y: auto; padding: 10px 12px 4px; flex: 1; }
   .body::-webkit-scrollbar { width: 6px; }
-  .body::-webkit-scrollbar-thumb { background: rgba(255,255,255,.18); border-radius: 3px; }
+  .body::-webkit-scrollbar-thumb { background: var(--ui-border-3); border-radius: 3px; }
 
   .sec { margin-bottom: 13px; }
   .sec-t {
     font-size: 10.5px; text-transform: uppercase; letter-spacing: .08em;
-    color: #8b93a7; margin-bottom: 6px; font-weight: 600;
+    color: var(--ui-fg-3); margin-bottom: 6px; font-weight: 600;
   }
 
   .model-name {
     padding: 7px 9px; border-radius: 8px; margin-bottom: 6px;
-    background: rgba(108,140,255,.14); color: #b9c8ff;
-    border: 1px solid rgba(108,140,255,.25);
+    background: var(--ui-a14); color: var(--ui-accent-fg);
+    border: 1px solid var(--ui-a25);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .row { display: flex; gap: 6px; }
   input[type="text"] {
     flex: 1; min-width: 0; padding: 6px 8px; border-radius: 8px;
-    background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.14);
-    color: #e9ecf3; font-size: 11.5px; outline: none;
+    background: var(--ui-surface); border: 1px solid var(--ui-border);
+    color: var(--ui-fg); font-size: 11.5px; outline: none;
   }
-  input[type="text"]:focus { border-color: #6c8cff; background: rgba(108,140,255,.1); }
-  input[type="text"]::placeholder { color: #6b7284; }
+  input[type="text"]:focus { border-color: var(--ui-accent); background: var(--ui-a10); }
+  input[type="text"]::placeholder { color: var(--ui-fg-4); }
 
   button {
     font-family: inherit; font-size: 11.5px; cursor: pointer;
-    border-radius: 8px; border: 1px solid rgba(255,255,255,.14);
-    background: rgba(255,255,255,.08); color: #dfe4ee;
+    border-radius: 8px; border: 1px solid var(--ui-border);
+    background: var(--ui-surface); color: var(--ui-fg-2);
     padding: 6px 10px; transition: background .15s, border-color .15s;
   }
-  button:hover { background: rgba(255,255,255,.16); }
+  button:hover { background: var(--ui-surface-h); }
   button:disabled { opacity: .45; cursor: default; }
-  .btn-load { background: rgba(108,140,255,.28); border-color: rgba(108,140,255,.5); color: #dfe6ff; }
-  .btn-load:hover { background: rgba(108,140,255,.45); }
+  .btn-load { background: var(--ui-a28); border-color: var(--ui-a50); color: var(--ui-accent-fg); }
+  .btn-load:hover { background: var(--ui-a45); }
 
-  .hint { color: #6b7284; font-size: 10.5px; margin-top: 5px; line-height: 1.5; }
+  .hint { color: var(--ui-fg-4); font-size: 10.5px; margin-top: 5px; line-height: 1.5; }
 
   .motions { display: flex; flex-wrap: wrap; gap: 5px; max-height: 118px; overflow-y: auto; }
   .motions::-webkit-scrollbar { width: 5px; }
-  .motions::-webkit-scrollbar-thumb { background: rgba(255,255,255,.15); border-radius: 3px; }
+  .motions::-webkit-scrollbar-thumb { background: var(--ui-border-3); border-radius: 3px; }
   .chip { padding: 4px 9px; border-radius: 20px; font-size: 11px; }
-  .chip:hover { background: rgba(108,140,255,.3); border-color: rgba(108,140,255,.55); }
-  .empty { color: #6b7284; font-size: 11px; }
+  .chip:hover { background: var(--ui-a30); border-color: var(--ui-a55); }
+  .empty { color: var(--ui-fg-4); font-size: 11px; }
 
   .slider { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
-  .slider span { width: 42px; color: #99a1b3; flex: none; }
-  .slider b { width: 44px; text-align: right; color: #b9c8ff; font-weight: 500; flex: none;
+  .slider span { width: 42px; color: var(--ui-fg-3); flex: none; }
+  .slider b { width: 44px; text-align: right; color: var(--ui-accent-fg); font-weight: 500; flex: none;
     font-variant-numeric: tabular-nums; }
   input[type="range"] {
     flex: 1; -webkit-appearance: none; appearance: none; height: 4px; border-radius: 2px;
-    background: rgba(255,255,255,.16); outline: none;
+    background: var(--ui-surface-h); outline: none;
   }
   input[type="range"]::-webkit-slider-thumb {
     -webkit-appearance: none; width: 13px; height: 13px; border-radius: 50%;
-    background: #6c8cff; cursor: pointer; box-shadow: 0 0 0 3px rgba(108,140,255,.2);
+    background: var(--ui-accent); cursor: pointer; box-shadow: 0 0 0 3px var(--ui-a20);
   }
   input[type="range"]::-moz-range-thumb {
-    width: 13px; height: 13px; border: none; border-radius: 50%; background: #6c8cff; cursor: pointer;
+    width: 13px; height: 13px; border: none; border-radius: 50%; background: var(--ui-accent); cursor: pointer;
   }
 
   .switch { display: flex; align-items: center; justify-content: space-between;
-    padding: 5px 0; color: #c3cad8; }
+    padding: 5px 0; color: var(--ui-fg-2); }
   .switch input { appearance: none; -webkit-appearance: none; width: 32px; height: 18px;
-    border-radius: 10px; background: rgba(255,255,255,.16); position: relative;
+    border-radius: 10px; background: var(--ui-surface-h); position: relative;
     cursor: pointer; transition: background .2s; flex: none; margin: 0; }
   .switch input::after { content: ''; position: absolute; top: 2px; left: 2px;
-    width: 14px; height: 14px; border-radius: 50%; background: #fff; transition: transform .2s; }
-  .switch input:checked { background: #6c8cff; }
+    width: 14px; height: 14px; border-radius: 50%; background: var(--ui-fg); transition: transform .2s; }
+  .switch input:checked { background: var(--ui-accent); }
   .switch input:checked::after { transform: translateX(14px); }
 
   select {
     font-family: inherit; font-size: 11.5px; padding: 5px 7px; border-radius: 8px;
-    background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.14);
-    color: #dfe4ee; outline: none; cursor: pointer;
+    background: var(--ui-surface); border: 1px solid var(--ui-border);
+    color: var(--ui-fg-2); outline: none; cursor: pointer;
   }
-  select option { background: #1b1e26; color: #e9ecf3; }
-  .select-row { display: flex; align-items: center; justify-content: space-between; padding: 5px 0; color: #c3cad8; }
+  select option { background: var(--ui-solid); color: var(--ui-fg); }
+  .select-row { display: flex; align-items: center; justify-content: space-between; padding: 5px 0; color: var(--ui-fg-2); }
 
   .presets { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 2px; }
   .presets button { flex: 1; padding: 5px 4px; font-size: 11px; }
 
   footer {
     display: flex; gap: 6px; padding: 9px 12px;
-    border-top: 1px solid rgba(255,255,255,.09);
-    background: rgba(0,0,0,.16); flex-wrap: wrap;
+    border-top: 1px solid var(--ui-border-2);
+    background: var(--ui-sunken); flex-wrap: wrap;
   }
   footer button { flex: 1; white-space: nowrap; padding: 6px 6px; font-size: 11px; }
 
   .status {
     display: none; padding: 7px 10px; margin: 0 12px 9px;
     border-radius: 8px; font-size: 11px; line-height: 1.5;
-    background: rgba(108,140,255,.14); color: #b9c8ff;
-    border: 1px solid rgba(108,140,255,.28); white-space: pre-wrap;
+    background: var(--ui-a14); color: var(--ui-accent-fg);
+    border: 1px solid var(--ui-a28); white-space: pre-wrap;
   }
   .status.show { display: block; }
-  .status.error { background: rgba(255,90,90,.14); color: #ffb3b3; border-color: rgba(255,90,90,.35); }
+  .status.error { background: var(--ui-err-bg); color: var(--ui-err-fg); border-color: var(--ui-err-bd); }
 
   /* ---- 台词列表 ---- */
-  .voice-count { color: #6b7284; font-weight: 400; letter-spacing: 0; }
+  .voice-count { color: var(--ui-fg-4); font-weight: 400; letter-spacing: 0; }
   .voices { max-height: 170px; overflow-y: auto; display: flex; flex-direction: column; gap: 3px; }
   .voices::-webkit-scrollbar { width: 5px; }
-  .voices::-webkit-scrollbar-thumb { background: rgba(255,255,255,.15); border-radius: 3px; }
+  .voices::-webkit-scrollbar-thumb { background: var(--ui-border-3); border-radius: 3px; }
   .voice-line {
     display: flex; align-items: center; gap: 7px; cursor: pointer;
     padding: 5px 8px; border-radius: 7px; border: 1px solid transparent;
-    color: #c3cad8; font-size: 11.5px; text-align: left;
-    background: rgba(255,255,255,.04);
+    color: var(--ui-fg-2); font-size: 11.5px; text-align: left;
+    background: var(--ui-surface-weak);
   }
-  .voice-line:hover { background: rgba(108,140,255,.18); border-color: rgba(108,140,255,.35); }
-  .voice-line.playing { background: rgba(108,140,255,.28); border-color: rgba(108,140,255,.6); color: #dfe6ff; }
-  .voice-line .vn { flex: none; width: 62px; color: #99a1b3; overflow: hidden;
+  .voice-line:hover { background: var(--ui-a18); border-color: var(--ui-a35); }
+  .voice-line.playing { background: var(--ui-a28); border-color: var(--ui-a60); color: var(--ui-accent-fg); }
+  .voice-line .vn { flex: none; width: 62px; color: var(--ui-fg-3); overflow: hidden;
     text-overflow: ellipsis; white-space: nowrap; }
-  .voice-line.playing .vn { color: #b9c8ff; }
+  .voice-line.playing .vn { color: var(--ui-accent-fg); }
   .voice-line .vt { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .voices .empty { color: #6b7284; font-size: 11px; line-height: 1.6; padding: 4px 0; }
+  .voices .empty { color: var(--ui-fg-4); font-size: 11px; line-height: 1.6; padding: 4px 0; }
 
   /* ---- 悬浮操作栏（对齐 资源站 的 model-floating-actions） ---- */
   .bar {
     position: fixed; display: none; flex-direction: column; gap: 4px;
     padding: 5px; border-radius: 14px;
-    background: rgba(22,24,31,.86); backdrop-filter: blur(16px);
-    border: 1px solid rgba(255,255,255,.13);
+    background: var(--ui-bg-bar); backdrop-filter: blur(16px);
+    border: 1px solid var(--ui-border);
     box-shadow: 0 12px 32px rgba(0,0,0,.42);
     pointer-events: auto; transition: opacity .35s;
   }
@@ -3961,24 +4323,45 @@
   .bar button {
     width: 34px; height: 34px; padding: 0; border-radius: 9px; cursor: pointer;
     display: flex; align-items: center; justify-content: center;
-    background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.12);
-    color: #cfd5e2;
+    background: var(--ui-surface-weak); border: 1px solid var(--ui-border);
+    color: var(--ui-fg-2);
   }
-  .bar button:hover { background: rgba(108,140,255,.28); border-color: rgba(108,140,255,.5); color: #fff; }
-  .bar button.on { background: rgba(108,140,255,.34); border-color: rgba(108,140,255,.62); color: #fff; }
+  .bar button:hover { background: var(--ui-a28); border-color: var(--ui-a50); color: var(--ui-fg); }
+  .bar button.on { background: var(--ui-a34); border-color: var(--ui-a62); color: var(--ui-fg); }
   .bar button svg { width: 17px; height: 17px; display: block; fill: currentColor; }
-  .bar .sep { height: 1px; margin: 2px 4px; background: rgba(255,255,255,.1); }
+  .bar .sep { height: 1px; margin: 2px 4px; background: var(--ui-border); }
   /* ---- 设置面板底部的免责声明（v1.24：从控制栏挪到面板里）---- */
   .note {
-    padding: 8px 12px 2px; border-top: 1px solid rgba(255,255,255,.06);
-    font-size: 10px; line-height: 1.55; color: #6b7284;
+    padding: 8px 12px 2px; border-top: 1px solid var(--ui-surface-weak);
+    font-size: 10px; line-height: 1.55; color: var(--ui-fg-4);
     user-select: none; cursor: help;
   }
-  .note b { color: #8b93a7; font-weight: 600; }
+  .note b { color: var(--ui-fg-3); font-weight: 600; }
 
   /* ---- 快捷动画（对齐官方 UI 的 Quick animations）---- */
   .quick { display: flex; gap: 5px; flex-wrap: wrap; }
   .quick button { flex: 1; min-width: 62px; padding: 6px 4px; font-size: 11px; }
+
+  /* ---- 面板标题栏可拖动（v1.41）：与悬浮球 / 控制栏共用同一套坐标 ---- */
+  header { cursor: grab; }
+  header:active { cursor: grabbing; }
+  header .collapse { cursor: pointer; }
+
+  /* ---- 外观控件（v1.41，作为普通 .sec 躺在「台词」下面）---- */
+  .look-row { display: flex; align-items: center; gap: 6px; }
+  .look-tag { color: var(--ui-fg-3); font-size: 11px; flex: none; }
+  input[type="color"] {
+    -webkit-appearance: none; appearance: none; flex: none;
+    width: 38px; height: 22px; padding: 0; border-radius: 6px; cursor: pointer;
+    background: transparent; border: 1px solid var(--ui-border);
+  }
+  input[type="color"]::-webkit-color-swatch-wrapper { padding: 2px; }
+  input[type="color"]::-webkit-color-swatch { border: none; border-radius: 4px; }
+  .look-presets { display: flex; gap: 6px; margin-top: 7px; }
+  .look-presets button { flex: 1; padding: 5px 4px; font-size: 11px; }
+  .look-presets button.on {
+    background: var(--ui-a28); border-color: var(--ui-a50); color: var(--ui-fg);
+  }
 </style>
 
 <div class="bar"></div>
@@ -4105,6 +4488,24 @@
       <div class="sec-t">台词 <span class="voice-count"></span></div>
       <div class="voices"><div class="empty">用皮肤页链接或皮肤 ID 指定模型后，这里会列出全部台词</div></div>
     </div>
+
+    <div class="sec">
+      <div class="sec-t">外观</div>
+      <label class="slider"><span>不透明</span><input type="range" class="ui-opacity" min="0.2" max="1" step="0.01" value="1"><b>100%</b></label>
+      <div class="look-row">
+        <span class="look-tag">主色</span>
+        <input type="color" class="ui-color-main" value="#1b1e26">
+        <span class="look-tag">副色</span>
+        <input type="color" class="ui-color-accent" value="#6c8cff">
+      </div>
+      <div class="look-presets">
+        <button data-theme="dark">暗色</button>
+        <button data-theme="light">亮色</button>
+      </div>
+      <div class="hint"><b>主色</b>刷面板、控制栏、悬浮球的<b>背景</b>；<b>副色</b>是按钮 / 开关 / 滑杆的高亮色。
+        文字和边框不单独设 —— 它们按主色的明暗自动选深浅，免得挑亮背景配浅字糊成一片。
+        暗色和亮色各记一份，切换时下面两个色盘会跟着换。</div>
+    </div>
   </div>
 
   <div class="note" title="本脚本是非官方个人扩展，与飞牛 / 碧蓝航线官方无关。">
@@ -4119,6 +4520,7 @@
     <button class="btn-clear-cache">清缓存</button>
     <button class="btn-hide-fab">隐藏按钮</button>
   </footer>
+
 </div>
 `;
 
