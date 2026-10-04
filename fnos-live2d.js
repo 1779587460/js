@@ -55,7 +55,7 @@ try {
   if (window.__fnosL2DPlainLoaded) return;
   window.__fnosL2DPlainLoaded = true;
 
-  const VERSION = '1.41.0';
+  const VERSION = '1.43.0';
 
   /* ------------------------------------------------------------ *
    * 0. 探针：只要控制台出现下面这一行，就证明脚本确实被注入了。
@@ -243,7 +243,6 @@ try {
       if (urlP.host) {
         out.host = urlP.host;
         // 没给 ?static= 就**直接用 ?host= 的同一个地址**。
-        //   不在这里做 'static.' 前缀推导 —— 那是为 l2d.su 那套（l2d.su / static.l2d.su）
         //   写的，套到自建服务器上会拼出 static.你的域名 这种压根不存在的域。
         //   自托管时资源本来就都在自己这一台机器上，文件头部的说明也是这么写的：
         //   「两者通常是同一个地址，都填你的服务器 URL 即可」。
@@ -268,13 +267,17 @@ try {
     return out;
   })();
 
-  const STATIC_BASE = HOSTS.models;                     // 例：https://static.你的域名/azurlane
-  const SU_HOST = HOSTS.host;                           // 例：https://你的域名
-  const SU_ASSETS = SU_HOST + '/assets/';
-  const L2D_BASE = STATIC_BASE + '/live2d';
+  // ⚠️ v1.42：这几个必须是 let —— 面板里改资源域名时要在**不刷新页面**的前提下重算，
+  //   见下面的 applyHosts()。原来写成 const，所以「应用」只能 location.reload()。
+  let STATIC_BASE = HOSTS.models;                       // 例：https://static.你的域名/azurlane
+  let SU_HOST = HOSTS.host;                             // 例：https://你的域名
+  let SU_ASSETS = SU_HOST + '/assets/';
+  let L2D_BASE = STATIC_BASE + '/live2d';
 
-  // 各依赖的备用 CDN（按顺序尝试）
-  const CDN = {
+  // 各依赖的备用 CDN（按顺序尝试）。
+  // v1.42：包成函数 —— core 那条要用 SU_HOST 拼本地镜像地址，域名热切换后得重新生成。
+  function buildCDN() {
+  return {
     pixi: [
       // ★ npmmirror（淘宝 npm 镜像）实测最快：同一文件 0.10s，jsdelivr 1.18s、bootcdn 0.93s。
       //   注意它只对**热门包**提供 /files/ 直取；冷门包会 403（所以下面 live2d 那条没加它）。
@@ -308,6 +311,8 @@ try {
       'https://fastly.jsdelivr.net/npm/live2dcubismcore@1.0.2/live2dcubismcore.min.js',
     ],
   };
+  }
+  let CDN = buildCDN();
 
   const DEFAULT_CFG = {
     modelUrl: L2D_BASE + '/dafeng_3/dafeng_3.model3.json',
@@ -351,6 +356,8 @@ try {
     uiAccentDark: '#6c8cff',    // 副色 = 高亮（暗色模式）
     uiPrimaryLight: '#f5f6fa',  // 主色（亮色模式）
     uiAccentLight: '#4f6ef2',   // 副色（亮色模式）
+    uiTextDark: '',             // 字色：留空 = 跟随主色明暗自动选
+    uiTextLight: '',            //         填了 #rrggbb 就用它
     uiLight: false,             // false = 暗色，true = 亮色
   };
 
@@ -463,6 +470,23 @@ try {
   function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
 
   /* ------------------------------------------------------------ *
+   * 文本资源请求头（v1.42）
+   *
+   * 脚本自己发的这几条 fetch 拿的都是 js / json / css / html 这类可压缩文本，
+   * 显式声明支持 br + gzip。模型动辄十几 MB，压缩与否差得很明显。
+   *
+   * ⚠️ 实话实说：按 fetch 规范，Accept-Encoding 属于「禁止脚本设置的请求头」，
+   *    浏览器有权直接忽略这一行 —— 而且它本来也会自动带上
+   *    （通常是 gzip, deflate, br, zstd）。这里写出来是给「中间有自建网关 / 反代」的场景兜底：
+   *    有些网关只在客户端明确声明时才压缩。加上没有任何副作用。
+   * ------------------------------------------------------------ */
+  const TEXT_HEADERS = { 'Accept-Encoding': 'br, gzip' };
+  /** 带压缩声明的 fetch（credentials 仍是 omit，不带 cookie）*/
+  function fetchTextRes(url, init) {
+    return fetch(url, Object.assign({ credentials: 'omit', headers: TEXT_HEADERS }, init || {}));
+  }
+
+  /* ------------------------------------------------------------ *
    * 日志（v1.40 精简）
    *
    * 以前每条 log() 都直接 console.log → 一次启动刷出 30+ 行，用户看不过来，
@@ -528,11 +552,28 @@ try {
       n.style.color = isError ? '#ffb0b0' : '#dfe4f0';
       n.style.borderColor = isError ? 'rgba(255,120,120,.55)' : 'rgba(255,255,255,.14)';
       n.__isError = !!isError;
+      // v1.42：不分类别，5 秒后都自动收掉。
+      //   原来错误提示是**常驻**的（本意是方便截图反馈），实际观感就是左下角永远挂着
+      //   一条红字，时间久了像"脚本坏了"。启动过程里 bootHint 会被连续调用多次，
+      //   每次进来都重新计时，所以只在真正停下时才会读秒。
+      //   注意这里用 hideBootHintNode 而不是 bootHintFade —— 后者会置位「已就绪」标志，
+      //   那会让之后的普通提示再也弹不出来。
+      if (n.__hideT) clearTimeout(n.__hideT);
+      n.__hideT = setTimeout(() => hideBootHintNode(), 5000);
       return n;
     } catch (e) { return null; }
   }
 
-  /** 成功后淡出（错误提示则常驻，方便截图反馈） */
+  /** 只把左下角那条提示淡出移除 —— 不碰 __fnosBootHintDone 标志 */
+  function hideBootHintNode() {
+    const n = document.getElementById('fnos-l2d-boothint');
+    if (!n) return;
+    if (n.__hideT) { clearTimeout(n.__hideT); n.__hideT = null; }
+    n.style.opacity = '0';
+    setTimeout(() => { if (n && n.parentNode) n.parentNode.removeChild(n); }, 600);
+  }
+
+  /** 成功后淡出（错误提示也一并收掉，见 v1.41 的修复） */
   function bootHintFade() {
     window.__fnosBootHintDone = true;   // 标记：此后普通提示不再显示
     const n = document.getElementById('fnos-l2d-boothint');
@@ -713,7 +754,7 @@ try {
         }
       }
     } catch (e) { /* 缓存不可用，直连 */ }
-    const r = await fetch(url, { credentials: 'omit' });
+    const r = await fetchTextRes(url);
     if (!r.ok) throw new Error('HTTP ' + r.status + ' @ ' + url);
     const t = await r.text();
     if (looksLikeHtml(t)) {
@@ -989,7 +1030,7 @@ try {
 
   const Resolver = {
     async fromSkinId(id) {
-      const res = await fetch(SU_HOST + '/cn/skins/' + id + '/', { credentials: 'omit' });
+      const res = await fetchTextRes(SU_HOST + '/cn/skins/' + id + '/');
       if (!res.ok) throw new Error('皮肤页请求失败 HTTP ' + res.status);
       const html = await res.text();
 
@@ -1079,7 +1120,7 @@ try {
 
     const found = new Map();
     try {
-      const html = await (await fetch(SU_HOST + '/cn/', { credentials: 'omit' })).text();
+      const html = await (await fetchTextRes(SU_HOST + '/cn/')).text();
       const entry = (html.match(/\/assets\/(index-[A-Za-z0-9_-]{6,}\.js)/) || [])[1];
       const queue = [];
       if (entry) { found.set('index', entry); queue.push(entry); }
@@ -1983,7 +2024,7 @@ try {
       this._offBase = null;
       this.captureOfficialBase();
       try {
-        const r = await fetch(url, { credentials: 'omit' });
+        const r = await fetchTextRes(url);
         const j = await r.json();
         this.motionGroups = (j && j.FileReferences && j.FileReferences.Motions) || {};
       } catch (e) { this.motionGroups = {}; }
@@ -3006,8 +3047,34 @@ try {
    *   即「在某个 ArtMesh 上拖拽 -> 驱动某个 Cubism 参数」。碧蓝航线原版的触摸区就是这个机制，
    *   **不是**「点不同区域播不同动作」。
    * ============================================================ */
-  const L2D_DATA_BASE = SU_HOST + '/data/ships/CN/';
-  const L2D_VOICE_BASE = HOSTS.models + '/';
+  let L2D_DATA_BASE = SU_HOST + '/data/ships/CN/';   // v1.42：随域名重算
+  let L2D_VOICE_BASE = HOSTS.models + '/';
+
+  /**
+   * 就地重算所有「由资源域名派生」的量（v1.42）。
+   *
+   * 面板里改域名后调用它，后续请求立刻走新域名，**不需要整页刷新**。
+   * 不重载 Pixi / Cubism Core 运行时 —— 那是与域名内容无关的通用代码；
+   * 但 CDN 要重建，因为 core 的本地镜像地址是用 SU_HOST 拼的。
+   */
+  function applyHosts(next) {
+    const h = normalizeOrigin(next && next.host, location.protocol);
+    if (h) HOSTS.host = h;
+    // staticHost 传空 → 含义是「和 host 同一个地址」
+    const rawS = (next && next.staticHost !== undefined) ? next.staticHost : HOSTS.staticHost;
+    const s2 = rawS ? normalizeOrigin(rawS, location.protocol) : '';
+    HOSTS.staticHost = s2 || HOSTS.host;
+    HOSTS.models = HOSTS.staticHost ? (HOSTS.staticHost + '/azurlane') : '';
+
+    STATIC_BASE = HOSTS.models;
+    SU_HOST = HOSTS.host;
+    SU_ASSETS = SU_HOST + '/assets/';
+    L2D_BASE = STATIC_BASE + '/live2d';
+    L2D_DATA_BASE = SU_HOST + '/data/ships/CN/';
+    L2D_VOICE_BASE = HOSTS.models ? (HOSTS.models + '/') : '';
+    CDN = buildCDN();
+    return HOSTS;
+  }
 
   /** 从模型地址取模型名（= 资源站 的 prefab）：…/live2d/dafeng_3/dafeng_3.model3.json -> dafeng_3 */
   function prefabOfUrl(url) {
@@ -3585,6 +3652,7 @@ try {
       };
       bindTint('.ui-color-main', 'uiPrimaryDark', 'uiPrimaryLight');
       bindTint('.ui-color-accent', 'uiAccentDark', 'uiAccentLight');
+      bindTint('.ui-color-text', 'uiTextDark', 'uiTextLight');
 
       qa('[data-theme]').forEach((b) => {
         b.addEventListener('click', () => {
@@ -3595,19 +3663,106 @@ try {
         });
       });
 
-      // 资源域名：改完存 localStorage 并重载（域名变了，之前的资源缓存也用不上了）
+      // 资源域名（v1.42）：折叠面板 + 两行输入（主域 / 静态域）。
+      //   ★ 改完**就地切换**，不再 location.reload() —— 刷新会连整个飞牛桌面一起重来。
       const hostInput = q('.host-input');
+      const hostStaticInput = q('.host-static-input');
       const hostNow = q('.host-now');
-      if (hostNow) hostNow.textContent = HOSTS.host + ' ／ ' + HOSTS.staticHost;
-      if (hostInput) {
-        hostInput.value = HOSTS.host;
-        q('.btn-host').addEventListener('click', () => {
-          const v = String(hostInput.value || '').trim().replace(/\/+$/, '');
-          if (!/^https?:\/\/[^\s]+$/.test(v)) { this.setStatus('请填完整地址，例如 https://你的域名'); return; }
-          try { localStorage.setItem('fnos-l2d:hosts', JSON.stringify({ host: v })); } catch (e) {}
+      const hostFold = q('.host-fold');
+      const hostPanel = q('.host-panel');
+
+      // 「当前」只写一个地址：两行填一样的时候没必要重复两遍
+      const paintHostNow = () => {
+        if (!hostNow) return;
+        const same = !HOSTS.staticHost || HOSTS.staticHost === HOSTS.host;
+        hostNow.textContent = same ? HOSTS.host : (HOSTS.host + '  ／  ' + HOSTS.staticHost);
+      };
+      // 静态域与主域相同时留空，用「留空 = 同上」表达，比写两遍清楚
+      const paintHostInputs = () => {
+        if (hostInput) hostInput.value = HOSTS.host || '';
+        if (hostStaticInput) {
+          hostStaticInput.value =
+            (HOSTS.staticHost && HOSTS.staticHost !== HOSTS.host) ? HOSTS.staticHost : '';
+        }
+      };
+      paintHostNow();
+      paintHostInputs();
+
+      if (hostFold && hostPanel) {
+        hostFold.addEventListener('click', () => {
+          const open = hostPanel.classList.toggle('open');
+          hostFold.classList.toggle('folded', !open);
+          hostFold.setAttribute('aria-expanded', open ? 'true' : 'false');
+        });
+      }
+
+      const btnHost = q('.btn-host');
+      if (btnHost) {
+        btnHost.addEventListener('click', async () => {
+          const rawH = String((hostInput && hostInput.value) || '').trim();
+          const rawS = String((hostStaticInput && hostStaticInput.value) || '').trim();
+          if (!rawH) { this.setStatus('请先填主域名，例如 https://你的域名'); return; }
+          // normalizeOrigin 负责「带不带协议 / 末尾斜杠 / 多余路径」的规整
+          const h = normalizeOrigin(rawH, location.protocol);
+          if (!h) { this.setStatus('主域名格式不对，例如 https://你的域名'); return; }
+          const sIn = rawS ? normalizeOrigin(rawS, location.protocol) : '';
+          if (rawS && !sIn) { this.setStatus('静态域名格式不对（留空表示与主域名相同）'); return; }
+
+          const oldStatic = HOSTS.staticHost;
+          btnHost.disabled = true;
+          this.setStatus('正在切换到 ' + h + (sIn && sIn !== h ? '（静态 ' + sIn + '）' : '') + ' …');
+
+          // ① 就地重算所有域名派生量（SU_HOST / L2D_BASE / CDN …）
+          applyHosts({ host: h, staticHost: sIn || h });
+          try {
+            localStorage.setItem('fnos-l2d:hosts',
+              JSON.stringify({ host: HOSTS.host, staticHost: HOSTS.staticHost }));
+          } catch (e) {}
+          paintHostNow();
+          paintHostInputs();
+          try { installPreconnect(); } catch (e) {}   // 顺手把新域名的连接提前建好
+
+          // ② 旧域名下的模型资源缓存作废（缓存键是完整 URL，本就串不了，清了省空间）
           try { indexedDB.deleteDatabase('fnos-l2d-cache'); } catch (e) {}
-          this.setStatus('已切换到 ' + v + '，正在重新加载…');
-          setTimeout(() => location.reload(), 700);
+
+          // ③ 模型地址按新域名重拼：cfg 里存的是完整 URL，不重拼就还指着老域名
+          const c = Store.cfg;
+          if (c.modelUrl && oldStatic && oldStatic !== HOSTS.staticHost) {
+            c.modelUrl = String(c.modelUrl).split(oldStatic).join(HOSTS.staticHost);
+          }
+          try { Store.save(); } catch (e) {}
+
+          // ④ 运行时没起来就地重新初始化一次（这次带新域名）；已就绪的直接复用。
+          //    运行时是与资源域名无关的通用代码，起来了就不用再折腾。
+          //
+          //    ⚠️ 为什么必须处理这个：initRenderer 里是
+          //         E._officialBoot = E.initOfficial(...).catch(...)
+          //        —— 失败时错误被 catch 吞掉，promise 变成 resolved，可 this.official 仍是 null。
+          //        load() 开头 await 完它，紧接着就是 if (!this.official) throw '运行时未就绪'，
+          //        _officialBoot 不清掉的话，换多少次域名都只会重复这一句报错。
+          if (!Engine.official) {
+            Engine._officialBoot = null;
+            Engine.app = null;
+            if (!SuStack.ready) SuStack.promise = null;   // 上次 SuStack.load() 可能也是被拒的
+            const t = findWallpaperTarget();
+            if (t) {
+              this.setStatus('正在用新域名初始化运行时…');
+              try {
+                Engine.initRenderer(t.container, t);
+                await Engine._officialBoot;
+              } catch (e) {}
+            }
+          }
+
+          // ⑤ 就地重新载入模型
+          try {
+            await Engine.load(c.modelUrl, c.modelLabel);
+            this.setStatus('已切换到 ' + HOSTS.host + '，模型已重新载入');
+          } catch (e) {
+            this.setStatus('已切换到 ' + HOSTS.host + '，但模型载入失败：' + ((e && e.message) || e));
+          }
+          btnHost.disabled = false;
+          setTimeout(() => this.setStatus(''), 3000);
         });
       }
 
@@ -3993,9 +4148,20 @@ try {
       st.setProperty('--ui-bg-bar', 'rgba(' + rgb + ',.88)');
       st.setProperty('--ui-raised', 'rgba(' + shiftRgb(p, onLight ? -14 : 16).join(',') + ',.96)');
 
-      // ② 文字 / 边框 / 按钮表面：不开放，按主色明暗整组切换
+      // ② 文字 / 边框 / 按钮表面：按主色明暗整组切换
       const N = onLight ? NEUTRAL_ON_LIGHT : NEUTRAL_ON_DARK;
       for (const k in N) if (hasOwn(N, k)) st.setProperty(k, N[k]);
+
+      // ②b 字色（v1.42）：留空就沿用上面那套自动值；填了就覆盖主文字色，
+      //     并按背景明暗派生次级层次（亮背景往浅里走、暗背景往深里走），保持层次感。
+      const tIn = pickHex(isLight ? c.uiTextLight : c.uiTextDark, '');
+      if (tIn) {
+        const dir = onLight ? 1 : -1;
+        st.setProperty('--ui-fg', tIn);
+        st.setProperty('--ui-fg-2', mixHex(tIn, dir * 0.22));
+        st.setProperty('--ui-fg-3', mixHex(tIn, dir * 0.42));
+        st.setProperty('--ui-fg-4', mixHex(tIn, dir * 0.60));
+      }
 
       // ③ 副色：本体 + 各档透明度（CSS 拆不了 hex，只能在这儿算好铺进去）
       const a = hexToRgb(accent).join(',');
@@ -4029,6 +4195,16 @@ try {
       if (cm) cm.value = pickHex(isLight ? c.uiPrimaryLight : c.uiPrimaryDark, dft.primary);
       const ca = this.shadow.querySelector('.ui-color-accent');
       if (ca) ca.value = pickHex(isLight ? c.uiAccentLight : c.uiAccentDark, dft.accent);
+
+      // 字色色盘：自定义过就显示自定义值；没自定义过就显示当前"自动"选出来的那个颜色，
+      // 让用户一眼看到现在用的是深字还是浅字。
+      const ct = this.shadow.querySelector('.ui-color-text');
+      if (ct) {
+        const primary = pickHex(isLight ? c.uiPrimaryLight : c.uiPrimaryDark, dft.primary);
+        const autoText = relLuminance(hexToRgb(primary)) > 0.58
+          ? NEUTRAL_ON_LIGHT['--ui-fg'] : NEUTRAL_ON_DARK['--ui-fg'];
+        ct.value = pickHex(isLight ? c.uiTextLight : c.uiTextDark, '') || autoText;
+      }
 
       Array.from(this.shadow.querySelectorAll('[data-theme]')).forEach((b) => {
         b.classList.toggle('on', (b.getAttribute('data-theme') === 'light') === isLight);
@@ -4347,12 +4523,36 @@ try {
   header:active { cursor: grabbing; }
   header .collapse { cursor: pointer; }
 
+  /* ---- 资源域名：折叠标题 + 展开后的两行输入（v1.42）---- */
+  button.host-fold {
+    display: flex; align-items: center; gap: 5px;
+    width: 100%; padding: 0; margin: 0;
+    background: none; border: none; cursor: pointer; text-align: left;
+    font-size: 11px; color: var(--ui-fg-3);
+  }
+  button.host-fold:hover, button.host-fold:active {
+    background: none; border: none; color: var(--ui-fg-2);
+  }
+  .host-fold .caret {
+    width: 0; height: 0; flex: none;
+    border-left: 4px solid currentColor;
+    border-top: 3.5px solid transparent;
+    border-bottom: 3.5px solid transparent;
+    transition: transform .18s;
+  }
+  .host-fold:not(.folded) .caret { transform: rotate(90deg); }
+  .host-panel { display: none; margin-top: 8px; }
+  .host-panel.open { display: block; }
+  .host-panel input[type="text"] { width: 100%; margin-bottom: 6px; box-sizing: border-box; }
+  .host-panel .btn-host { width: 100%; }
+
   /* ---- 外观控件（v1.41，作为普通 .sec 躺在「台词」下面）---- */
-  .look-row { display: flex; align-items: center; gap: 6px; }
+  .look-row { display: flex; align-items: center; gap: 4px; }
   .look-tag { color: var(--ui-fg-3); font-size: 11px; flex: none; }
+  /* 主色 / 副色 / 字体颜色 挤一行，色盘收窄到 30px 才放得下 */
   input[type="color"] {
     -webkit-appearance: none; appearance: none; flex: none;
-    width: 38px; height: 22px; padding: 0; border-radius: 6px; cursor: pointer;
+    width: 30px; height: 20px; padding: 0; border-radius: 5px; cursor: pointer;
     background: transparent; border: 1px solid var(--ui-border);
   }
   input[type="color"]::-webkit-color-swatch-wrapper { padding: 2px; }
@@ -4386,12 +4586,17 @@ try {
 
   <div class="body">
     <div class="sec">
-      <div class="sec-t">资源域名</div>
-      <div class="row">
-        <input type="text" class="host-input" placeholder="https://你的资源域名">
-        <button class="btn-host">应用</button>
+      <div class="sec-t">
+        <button class="host-fold folded" aria-expanded="false" title="展开后可修改资源域名（默认折叠）">
+          <span class="caret"></span>资源域名
+        </button>
       </div>
-      <div class="hint">当前：<b class="host-now"></b></div>
+      <div class="host-panel">
+        <input type="text" class="host-input" placeholder="https://你的域名">
+        <input type="text" class="host-static-input" placeholder="https://static.你的域名（留空 = 同上）">
+        <button class="btn-host">应用</button>
+        <div class="hint">当前：<b class="host-now"></b></div>
+      </div>
     </div>
 
     <div class="sec">
@@ -4413,8 +4618,6 @@ try {
         <button data-quick="touch_body">摸身体</button>
         <button data-quick="random">随机一个</button>
       </div>
-      <div class="hint">对齐 资源站 的「快捷动画」：一键就播，不用去下面的完整动作表里翻。
-        「随机一个」会从该模型的非待机动作里挑一个（待机循环交给「空闲自动动作」）。</div>
     </div>
 
     <div class="sec">
@@ -4436,52 +4639,27 @@ try {
         <button data-preset="fill">填满高度</button>
       </div>
       <label class="switch">水平镜像<input type="checkbox" class="s-mirror"></label>
-      <label class="switch">快速加载<input type="checkbox" class="s-fastload" checked></label>
-      <label class="switch">进入加载登录动画<input type="checkbox" class="s-entrylogin" checked></label>
+      <label class="switch" title="启动时并行预取官方运行时与依赖库，二次加载更快；关掉则用到才拉">快速加载<input type="checkbox" class="s-fastload" checked></label>
+      <label class="switch" title="载入 / 切换模型时先播该模型的 login 动作；部分模型的 login 会改变服饰状态">进入加载登录动画<input type="checkbox" class="s-entrylogin" checked></label>
       <label class="switch">呼吸<input type="checkbox" class="s-breath" checked></label>
       <label class="switch">眨眼<input type="checkbox" class="s-blink" checked></label>
-      <label class="switch">登录页也显示<input type="checkbox" class="s-loginpage"></label>
-      <label class="switch">简易控制栏<input type="checkbox" class="s-bar" checked></label>
-      <div class="hint"><b>快速加载</b>：启动时立刻并行预取官方运行时（约 2.5MB）与依赖库，
-        省掉两段串行的等待；配合内置资源缓存，二次刷新基本几秒就能就绪。
-        关掉则改成"用到才拉"（少占一点带宽，但会慢几秒）。<br>
-        <b>进入加载登录动画</b>：载入/切换模型时先播该模型的 <code>login</code> 动作（和 资源站 一样）。
-        有些模型的 login 会顺手改变服饰/道具状态，不喜欢就关掉 —— 关掉后载入时只播待机。</div>
-      <div class="hint"><b>简易控制栏</b>：勾上后右下角的悬浮球会直接变成一条控制栏
-        （分区互动 / 声音 / 台词 / 拖动缩放 / 隐藏模型 / 还原 / 设置），点最下面的
-        「设置」按钮展开这个面板。取消勾选则恢复成悬浮球。<br>
-        <b>按住控制栏的空白处即可拖动</b>它的位置（悬浮球也一样，位置会自动记住）。</div>
-      <div class="hint">登录页和桌面共用同一套壁纸节点，所以脚本两边都会命中。
-        但登录页会被整屏的交互层盖住、导致登不进去，所以<b>默认不接管登录页</b>；
-        想看的话打开这个开关，并顺手关掉「分区互动」，登录界面完全不受影响。</div>
+      <label class="switch" title="登录页会被整屏交互层盖住、导致登不进去，所以默认不接管；开启后建议同时关掉「分区互动」">登录页也显示<input type="checkbox" class="s-loginpage"></label>
+      <label class="switch" title="悬浮球变成一条控制栏；按住空白处可拖动，位置自动记住">简易控制栏<input type="checkbox" class="s-bar" checked></label>
     </div>
 
     <div class="sec">
       <div class="sec-t">互动</div>
-      <label class="switch">视线跟随鼠标<input type="checkbox" class="s-follow" checked></label>
-      <label class="switch">空闲自动动作<input type="checkbox" class="s-idle" checked></label>
-      <label class="switch">拖动与缩放<input type="checkbox" class="s-gestures" checked></label>
-      <label class="switch">分区互动<input type="checkbox" class="s-zones" checked></label>
-      <label class="switch">显示触摸区域<input type="checkbox" class="s-zoneshow"></label>
-      <div class="hint">交互<b>只认触摸区</b>：命中触摸区才拦截点击，其余位置（桌面图标、Dock、
-        登录卡片…）照常点到 —— 两者不互斥。<br>
-        <b>拖动与缩放</b>：悬停在模型上滚轮缩放；按住模型拖动可挪动模型
-        （点在可拖拽的触摸区上时优先执行互动，拖开一段即转为挪动模型）。<br>
-        <b>分区互动</b>：接管触摸区 —— 点/拖模型上那些看不见的部件来驱动参数，并联动语音。
-        关掉后模型只做视线跟随，桌面图标永远优先。<br>
-        <b>显示触摸区域</b>：把那些看不见的触摸部件画出来（红=头 绿=身体 蓝=特殊 琥珀=可拖拽 紫=待机区）。</div>
+      <label class="switch" title="模型的视线跟着鼠标走">视线跟随鼠标<input type="checkbox" class="s-follow" checked></label>
+      <label class="switch" title="一段时间没互动就自动播待机动作">空闲自动动作<input type="checkbox" class="s-idle" checked></label>
+      <label class="switch" title="悬停模型滚轮缩放；按住模型拖动可挪位置">拖动与缩放<input type="checkbox" class="s-gestures" checked></label>
+      <label class="switch" title="接管触摸区：点 / 拖模型上看不见的部件来驱动参数并联动语音；关掉后只做视线跟随">分区互动<input type="checkbox" class="s-zones" checked></label>
+      <label class="switch" title="把看不见的触摸部件画出来（红=头 绿=身体 蓝=特殊 琥珀=可拖拽 紫=待机区）">显示触摸区域<input type="checkbox" class="s-zoneshow"></label>
     </div>
 
     <div class="sec">
       <div class="sec-t">声音</div>
-      <label class="switch">声音<input type="checkbox" class="s-sound"></label>
-      <label class="switch">语音联动动作<input type="checkbox" class="s-voicemotion" checked></label>
-      <div class="hint">一个开关管<b>台词语音</b>（资源站 游戏数据）：<br>
-        · 点下面的台词列表 → 播那句（并联动它的动作）；<br>
-        · <b>直接互动模型</b>（点/摸触摸区）→ 官方触发动作后自动播对应台词（headtouch→摸头台词、
-        touch2→特殊触摸台词…）。<br>
-        默认关；点台词或开这个开关都能启用。动作音效（model3.json 自带 Sounds）对游戏抽取模型基本为空，
-        所以会响的只有台词语音。</div>
+      <label class="switch" title="台词语音总开关；点台词或摸触摸区都能触发，默认关">声音<input type="checkbox" class="s-sound"></label>
+      <label class="switch" title="播台词的同时带上它绑定的动作">语音联动动作<input type="checkbox" class="s-voicemotion" checked></label>
     </div>
 
     <div class="sec">
@@ -4497,14 +4675,16 @@ try {
         <input type="color" class="ui-color-main" value="#1b1e26">
         <span class="look-tag">副色</span>
         <input type="color" class="ui-color-accent" value="#6c8cff">
+        <span class="look-tag">字体颜色</span>
+        <input type="color" class="ui-color-text" value="#e9ecf3">
       </div>
       <div class="look-presets">
         <button data-theme="dark">暗色</button>
         <button data-theme="light">亮色</button>
       </div>
-      <div class="hint"><b>主色</b>刷面板、控制栏、悬浮球的<b>背景</b>；<b>副色</b>是按钮 / 开关 / 滑杆的高亮色。
-        文字和边框不单独设 —— 它们按主色的明暗自动选深浅，免得挑亮背景配浅字糊成一片。
-        暗色和亮色各记一份，切换时下面两个色盘会跟着换。</div>
+      <div class="hint"><b>主色</b>刷面板、控制栏、悬浮球的<b>背景</b>；<b>副色</b>是按钮 / 开关 / 滑杆的高亮色；
+        <b>字体颜色</b>是面板正文的颜色，不动时按主色的明暗自动选深浅，动过就固定成你选的值。
+        三种颜色都是暗色和亮色各记一份，切换时三个色盘会跟着换。</div>
     </div>
   </div>
 
