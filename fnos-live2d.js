@@ -55,7 +55,7 @@ try {
   if (window.__fnosL2DPlainLoaded) return;
   window.__fnosL2DPlainLoaded = true;
 
-  const VERSION = '1.43.0';
+  const VERSION = '1.45.0';
 
   /* ------------------------------------------------------------ *
    * 0. 探针：只要控制台出现下面这一行，就证明脚本确实被注入了。
@@ -243,7 +243,8 @@ try {
       if (urlP.host) {
         out.host = urlP.host;
         // 没给 ?static= 就**直接用 ?host= 的同一个地址**。
-        //   写的，套到自建服务器上会拼出 static.你的域名 这种压根不存在的域。
+        //   不在这里做 'static.' 前缀推导 —— 那套规则只适用于「主域 + static.主域」
+        //   这种镜像站结构，套到自建服务器上会拼出 static.你的域名 这种压根不存在的域。
         //   自托管时资源本来就都在自己这一台机器上，文件头部的说明也是这么写的：
         //   「两者通常是同一个地址，都填你的服务器 URL 即可」。
         out.staticHost = urlP.staticHost || urlP.host;
@@ -335,7 +336,9 @@ try {
     zones: true,       // 分区互动：拖拽模型部件驱动参数（来自 资源站 的 live2dTouch 规则）
     zoneShow: false,   // 显示触摸区域：把模型里隐藏的触摸部件画出来
     sound: false,      // 声音总开关（台词语音 + 模型自带的动作音效）
-    voiceMotion: true, // 播语音时联动播放对应动作
+    // v1.45：默认关 —— 动作前摇与语音开始的时机经常对不上（有的动作要"开门"之后
+    //   才开口），一起播反而像音画不同步。想恢复联动，面板里把「语音联动动作」勾上。
+    voiceMotion: false,
     bar: true,         // 悬浮操作栏
     skinId: 307074,    // 资源站 皮肤 ID（用来定位台词库；默认模型大凤「放学后的甜蜜时光」）
     // v1.9.0：「可交互范围」「交互层」两个设置已移除。
@@ -988,6 +991,12 @@ try {
         if (this.cfg.breath === undefined) this.cfg.breath = true;
         if (this.cfg.entryLogin === undefined) this.cfg.entryLogin = true;
         if (this.cfg.fastLoad === undefined) this.cfg.fastLoad = true;
+        // v1.45：语音联动动作改为默认关。老配置里可能存着 true —— 一次性迁掉，
+        //   否则升级后照旧联动，用户会以为改动没生效。之后面板里可随时再勾上。
+        if (this.cfg.voiceMotionV !== 45) {
+          this.cfg.voiceMotion = false;
+          this.cfg.voiceMotionV = 45;
+        }
         // v1.24：「渲染」滑杆以前没接线，值多为默认 1；现在它真的控制渲染分辨率了，
         // 把这类默认值迁到官方基线 1.5，免得升级后画面反而变糊。
         //
@@ -1055,7 +1064,7 @@ try {
         return { url: s, label: m ? m[1] : s };
       }
       // b) 资源站 皮肤页链接
-      const link = s.match(/l2d\.su\/(?:[a-z]{2}\/)?skins\/(\d+)/i);
+      const link = s.match(/\/(?:[a-z]{2}\/)?skins\/(\d+)/i);
       if (link) return Resolver.fromSkinId(link[1]);
       // c) 纯数字皮肤 ID
       if (/^\d{4,}$/.test(s)) return Resolver.fromSkinId(s);
@@ -1204,7 +1213,7 @@ try {
                 const rel = (node.rel || '').toLowerCase();
                 if (rel === 'stylesheet' || rel === 'preload') {
                   const href = node.href || '';
-                  if (/l2d\.su\/assets\/|^\/assets\//.test(href) || /index-[A-Za-z0-9_-]+\.css/.test(href)) {
+                  if (/^\/assets\//.test(href) || /index-[A-Za-z0-9_-]+\.css/.test(href)) {
                     if (window.__FNOS_LOG_CSS) log('已拦截官方样式表，避免污染桌面：' + href);
                     // ⚠️ vite 会 await 这个 link 的 load/error。元素不进 DOM 就永远
                     // 不会触发，Promise 悬挂 → 模型载入卡死。这里手动派发 load。
@@ -2037,11 +2046,31 @@ try {
       if (label) Store.cfg.modelLabel = label;
       Store.save();
 
+      // ★ 换台词库必须排在播 login **之前**（v1.44 修复）。
+      //
+      //   原来的顺序是反的：先 playAction('login')、后 loadGameData()，后果有两个 ——
+      //     · playAction() 是从 this.voices 里按 l2dAction 找台词的，那一刻 voices
+      //       还指向上一个模型的台词库 → 换模型时播出来的是**上一个模型的登录台词**；
+      //     · 新模型的 login 台词要等 loadGameData() 才加载，那时早就过了播报时机，
+      //       于是「新模型的登录台词反而不播」。
+      //   这里只调顺序、不改任何取值逻辑：loadGameData() 依赖的 Store.cfg.modelUrl
+      //   和 Store.cfg.skinId 在上面都已就位（skinId 在点「载入」时就写好了），提前是安全的。
+      //
+      // ⚠️ 必须 await（v1.23）：台词库来自游戏数据 JSON，如果不等它，
+      //   「模型已就绪」之后的一小段时间里 this.voices 还是空的 ——
+      //   这期间用户点模型互动，onOfficialAction 会因为拿不到台词而静默跳过
+      //   （表现就是「互动有时有声音、有时没有」）。走缓存时这一步只要几十毫秒。
+      //
+      // 顺带先掐掉上一个模型可能还在播的语音：loadGameData() 只清数组、不停音频，
+      //   不掐的话即使下面播对了新台词，旧声音也会叠着一起响。
+      try { this.stopVoice(); } catch (e) {}
+      try { await this.loadGameData(); } catch (e) { log('台词库加载失败：' + (e && e.message)); }
+
       // 载入时播什么（v1.26）：默认播 login（对齐 资源站 —— 进门先说登录台词那套动作），
       // 面板「进入加载登录动画」关掉则播待机 idle0。
-      // ⚠️ 位置很关键：必须放在 this.motionGroups 赋值**之后** ——
-      //    它是在前面 fetch model3.json 时才填好的，放前面会读到上一个模型（或空）的动作表，
-      //    结果 login 永远判不出来、悄悄退化成 idle。
+      // ⚠️ 位置很关键：必须排在 this.motionGroups 赋值（前面 fetch model3.json 时填的）
+      //    和上面 loadGameData() **之后** —— 放前面会读到上一个模型的动作表 / 台词，
+      //    结果 login 判不出来（退化成 idle）或者播错人。
       try {
         const groups = this.motionGroups || {};
         if (Store.cfg.entryLogin !== false && groups.login && groups.login.length) {
@@ -2052,11 +2081,6 @@ try {
       } catch (e) {}
 
       this.applyOfficialSettings();
-      // ⚠️ 必须 await（v1.23）：台词库来自游戏数据 JSON，如果不等它，
-      //   「模型已就绪」之后的一小段时间里 this.voices 还是空的 ——
-      //   这期间用户点模型互动，onOfficialAction 会因为拿不到台词而静默跳过
-      //   （表现就是「互动有时有声音、有时没有」）。走缓存时这一步只要几十毫秒。
-      try { await this.loadGameData(); } catch (e) { log('台词库加载失败：' + (e && e.message)); }
       this.layout();
       UI.setModelName(Store.cfg.modelLabel || url);
       UI.renderMotions(Object.keys(this.motionGroups || {}));
