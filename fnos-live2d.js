@@ -2045,7 +2045,6 @@ try {
         const r = await fetchTextRes(url);
         const j = await r.json();
         this.motionGroups = (j && j.FileReferences && j.FileReferences.Motions) || {};
-        this.prefetchMotions(url);
       } catch (e) { this.motionGroups = {}; }
       // ⚠️ 必须先把当前模型写回配置（v1.25 修）：
       //    台词库与触摸规则都靠 prefabOfUrl(Store.cfg.modelUrl) 去游戏数据里找皮肤，
@@ -2097,6 +2096,10 @@ try {
       UI.setStatus('');
       UI.hideError();
       perfMark('ready');
+      // ★ 动作预热（v1.46）放在这里，而不是解析 model3.json 那一步 ——
+      //   官方 viewer 的顺序是「先把模型主体拉齐（model3.json → moc3 → 纹理 → physics），
+      //   再轮到动作」。等到这里才动手，既不会跟纹理抢带宽，也不会拖慢模型出现。
+      this.prefetchMotions(url);
       log('官方引擎：模型已就绪（命中区 ' + ((viewer.live2dHitAreas && viewer.live2dHitAreas.length) || 0) + ' 个）');
       perfReport();
       this.startIdleLoop();   // 空闲自动动作（官方模式）
@@ -2595,7 +2598,9 @@ try {
      * 我们跑的是官方运行时 chunk，改不了它的构造参数，但所有资源请求都会经过
      * installModelAssetCache 这层缓存 —— 所以只要提前把文件拉一遍，官方之后取就直接命中。
      *
-     * 不阻塞模型显示：整段是后台跑的，每批 4 个（别把带宽占满，免得和纹理抢）。
+     * 不阻塞模型显示：整段后台跑，一次性全发出去 —— 不去人为限流，
+     * 交给浏览器按同域名 6 并发自己排队就好。反正此时模型主体已经加载完，
+     * 不存在跟纹理抢带宽的问题。
      * 跟着「快速加载」走 —— 关掉它就完全按需拉取。
      */
     prefetchMotions(url) {
@@ -2613,16 +2618,10 @@ try {
           }
         }
         if (!list.length) return;
-        log('动作预热：' + list.length + ' 个文件，后台分批拉取（不阻塞显示）');
-        (async () => {
-          const BATCH = 4;
-          for (let i = 0; i < list.length; i += BATCH) {
-            await Promise.all(list.slice(i, i + BATCH).map(function (f) {
-              return fetchTextCached(dir + f).catch(function () { return ''; });
-            }));
-          }
-          log('动作预热完成：' + list.length + ' 个文件已进缓存');
-        })();
+        log('动作预热：' + list.length + ' 个文件，后台全量拉取（不阻塞显示）');
+        list.forEach(function (f) {
+          fetchTextCached(dir + f).catch(function () { return ''; });
+        });
       } catch (e) { /* 预热失败无所谓，按需加载照旧 */ }
     },
 
