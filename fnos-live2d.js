@@ -55,7 +55,7 @@ try {
   if (window.__fnosL2DPlainLoaded) return;
   window.__fnosL2DPlainLoaded = true;
 
-  const VERSION = '1.45.0';
+  const VERSION = '1.46.0';
 
   /* ------------------------------------------------------------ *
    * 0. 探针：只要控制台出现下面这一行，就证明脚本确实被注入了。
@@ -1944,8 +1944,17 @@ try {
             if (r.width < 2 || r.height < 2) return;
             const nx = Math.max(-1, Math.min(1, ((e.clientX - r.left) / r.width) * 2 - 1));
             const ny = Math.max(-1, Math.min(1, ((e.clientY - r.top) / r.height) * 2 - 1));
+            // ⚠️ v1.46 修复（Y 方向反了）：Cubism 标准参数表里这两个参数的正方向是**向上** ——
+            //     ParamAngleY  "+转向画面上方"
+            //     ParamEyeBallY "+向上看"
+            //   而 ny 是屏幕坐标（向下为正），直接乘进去的后果是「鼠标往上移、模型反而低头」。
+            //   这里取反，让 _followTarget.y 变成「上正下负」：
+            //     · 主路径（下面直接乘 30）符合官方正方向；
+            //     · 兜底的 focusController.focus(x, y) 同样是上正 —— pixi-live2d-display
+            //       内部就是 focus(cos, -sin)，等价于把屏幕 y 翻了号。
+            //   顺带 ParamAngleZ（歪头）用的也是这个 y，取反后「鼠标在右上 → 头向右倾」才成立。
             // 水平给满、垂直收一点（头部左右摆得比上下多，观感更自然）
-            E._followTarget = { x: nx * 0.9, y: ny * 0.6 };
+            E._followTarget = { x: nx * 0.9, y: -ny * 0.6 };
             E._followHits = (E._followHits || 0) + 1;
             // 双保险：官方若某个模型不写角度参数，focusController 这条也能兜底
             const m = vv.currentLive2d;
@@ -2036,6 +2045,7 @@ try {
         const r = await fetchTextRes(url);
         const j = await r.json();
         this.motionGroups = (j && j.FileReferences && j.FileReferences.Motions) || {};
+        this.prefetchMotions(url);
       } catch (e) { this.motionGroups = {}; }
       // ⚠️ 必须先把当前模型写回配置（v1.25 修）：
       //    台词库与触摸规则都靠 prefabOfUrl(Store.cfg.modelUrl) 去游戏数据里找皮肤，
@@ -2576,6 +2586,45 @@ try {
 
 
 
+
+    /**
+     * 后台预热本模型的**全部**动作文件（v1.46）。
+     *
+     * 模仿资源站：它加载模型时会把 motions/*.motion3.json 一次性全拉下来
+     * （pixi-live2d-display 里对应的选项是 motionPreload: ALL），所以点任何动作都不用等。
+     * 我们跑的是官方运行时 chunk，改不了它的构造参数，但所有资源请求都会经过
+     * installModelAssetCache 这层缓存 —— 所以只要提前把文件拉一遍，官方之后取就直接命中。
+     *
+     * 不阻塞模型显示：整段是后台跑的，每批 4 个（别把带宽占满，免得和纹理抢）。
+     * 跟着「快速加载」走 —— 关掉它就完全按需拉取。
+     */
+    prefetchMotions(url) {
+      try {
+        if (Store.cfg.fastLoad === false) return;
+        const groups = this.motionGroups || {};
+        const dir = String(url || '').replace(/[^/]*$/, '');   // 去掉文件名，留目录
+        const seen = Object.create(null);
+        const list = [];
+        for (const g in groups) {
+          const arr = groups[g] || [];
+          for (let i = 0; i < arr.length; i++) {
+            const f = arr[i] && arr[i].File;
+            if (f && !seen[f]) { seen[f] = 1; list.push(f); }
+          }
+        }
+        if (!list.length) return;
+        log('动作预热：' + list.length + ' 个文件，后台分批拉取（不阻塞显示）');
+        (async () => {
+          const BATCH = 4;
+          for (let i = 0; i < list.length; i += BATCH) {
+            await Promise.all(list.slice(i, i + BATCH).map(function (f) {
+              return fetchTextCached(dir + f).catch(function () { return ''; });
+            }));
+          }
+          log('动作预热完成：' + list.length + ' 个文件已进缓存');
+        })();
+      } catch (e) { /* 预热失败无所谓，按需加载照旧 */ }
+    },
 
     /* ---------- 台词库 ---------- */
     /** 拉取当前模型对应的游戏数据：台词（words）与触摸区规则（live2dTouch） */
